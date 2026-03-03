@@ -45,6 +45,24 @@ if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
   exit 1
 fi
 
+PY_VER="$("${PYTHON_BIN}" - <<'PY'
+import sys
+print(".".join(map(str, sys.version_info[:3])))
+PY
+)"
+PY_OK="$("${PYTHON_BIN}" - <<'PY'
+import sys
+print(1 if sys.version_info >= (3, 10) else 0)
+PY
+)"
+if [ "${PY_OK}" != "1" ]; then
+  echo "ERROR: ${PYTHON_BIN} is Python ${PY_VER}, but Python >= 3.10 is required."
+  echo "Use your conda/env python explicitly, e.g.:"
+  echo "  conda activate vlm_new"
+  echo "  PYTHON_BIN=$(which python) BOOTSTRAP_OFFLINE=0 bash scripts/bootstrap_env.sh"
+  exit 1
+fi
+
 echo "[bootstrap] root      : ${ROOT_DIR}"
 echo "[bootstrap] python    : ${PYTHON_BIN}"
 echo "[bootstrap] venv      : ${VENV_DIR}"
