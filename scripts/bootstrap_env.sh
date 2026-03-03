@@ -10,6 +10,26 @@ PLAYGROUND_REF="${PLAYGROUND_REF:-f2159f3}"
 USE_CUDA="${USE_CUDA:-1}"
 BOOTSTRAP_OFFLINE="${BOOTSTRAP_OFFLINE:-0}"
 
+# Some HPC images ship very old git versions without "-C".
+if git -C "${ROOT_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  GIT_SUPPORTS_C=1
+else
+  GIT_SUPPORTS_C=0
+fi
+
+git_in_repo() {
+  local repo="$1"
+  shift
+  if [ "${GIT_SUPPORTS_C}" = "1" ]; then
+    git -C "${repo}" "$@"
+  else
+    (
+      cd "${repo}"
+      git "$@"
+    )
+  fi
+}
+
 if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
   echo "ERROR: ${PYTHON_BIN} not found. Set PYTHON_BIN to a valid Python 3.10+ binary."
   exit 1
@@ -47,8 +67,8 @@ if [ ! -d "${PLAYGROUND_DIR}/.git" ]; then
   git clone https://github.com/google-deepmind/mujoco_playground.git "${PLAYGROUND_DIR}"
 fi
 
-git -C "${PLAYGROUND_DIR}" fetch --all --tags
-git -C "${PLAYGROUND_DIR}" checkout "${PLAYGROUND_REF}"
+git_in_repo "${PLAYGROUND_DIR}" fetch --all --tags
+git_in_repo "${PLAYGROUND_DIR}" checkout "${PLAYGROUND_REF}"
 
 if [ "${USE_CUDA}" = "1" ]; then
   python -m pip install --upgrade "jax[cuda12]"
