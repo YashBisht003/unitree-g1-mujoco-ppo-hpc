@@ -12,7 +12,7 @@ fi
 PARTITION="${PARTITION:-gpu}"
 GPUS="${GPUS:-1}"
 CPUS_PER_TASK="${CPUS_PER_TASK:-16}"
-MEM="${MEM:-64G}"
+MEM="${MEM:-}"
 TIME_LIMIT="${TIME_LIMIT:-24:00:00}"
 
 EXPORT_VARS=(
@@ -28,14 +28,20 @@ EXPORT_VARS=(
   "USE_WANDB=${USE_WANDB:-0}"
 )
 
-echo "[submit-flat] partition=${PARTITION} gpus=${GPUS} cpus=${CPUS_PER_TASK} mem=${MEM} time=${TIME_LIMIT}"
+MEM_PRINT="${MEM:-<cluster-default>}"
+echo "[submit-flat] partition=${PARTITION} gpus=${GPUS} cpus=${CPUS_PER_TASK} mem=${MEM_PRINT} time=${TIME_LIMIT}"
 echo "[submit-flat] script=${SBATCH_SCRIPT}"
 
-sbatch \
-  --partition="${PARTITION}" \
-  --gres="gpu:${GPUS}" \
-  --cpus-per-task="${CPUS_PER_TASK}" \
-  --mem="${MEM}" \
-  --time="${TIME_LIMIT}" \
-  --export="$(IFS=,; echo "${EXPORT_VARS[*]}")" \
-  "${SBATCH_SCRIPT}"
+SBATCH_ARGS=(
+  "--partition=${PARTITION}"
+  "--gres=gpu:${GPUS}"
+  "--cpus-per-task=${CPUS_PER_TASK}"
+  "--time=${TIME_LIMIT}"
+  "--export=$(IFS=,; echo "${EXPORT_VARS[*]}")"
+)
+
+if [ -n "${MEM}" ]; then
+  SBATCH_ARGS+=("--mem=${MEM}")
+fi
+
+sbatch "${SBATCH_ARGS[@]}" "${SBATCH_SCRIPT}"

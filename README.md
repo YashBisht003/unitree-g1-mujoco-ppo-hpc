@@ -102,6 +102,7 @@ bash scripts/submit_flat.sh
 ```
 
 If your partition name differs (`gpu`, `hip-gpu`, etc.), use `PARTITION=<name> bash scripts/submit_flat.sh` and `PARTITION=<name> bash scripts/submit_rough.sh`.
+Memory is not hardcoded now; it uses scheduler defaults unless you pass `MEM=...`.
 
 By default, `bootstrap_env.sh` checks out MuJoCo Playground commit `f2159f3` for reproducibility. Override with `PLAYGROUND_REF=main` if you want latest.
 
