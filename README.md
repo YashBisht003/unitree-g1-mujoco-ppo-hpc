@@ -109,6 +109,7 @@ For older login nodes (e.g., GCC 4.8), bootstrap pins `ml_dtypes` to binary whee
 Bootstrap defaults to `PIP_NO_CACHE_DIR=1` to reduce disk usage under quota limits.
 Bootstrap defaults to `PLAYGROUND_INSTALL_MODE=no_warp`, which skips `warp-lang` and installs a JAX-only stack compatible with older HPC nodes.
 Bootstrap also pins `jax/jaxlib` and `flax` to compatible versions to avoid plugin/version drift.
+Bootstrap defaults to `USE_MEDIAPY_SHIM=1` in this HPC setup to avoid `mediapy` importing IPython/pyexpat during training startup.
 
 By default, `bootstrap_env.sh` checks out MuJoCo Playground commit `f2159f3` for reproducibility. Override with `PLAYGROUND_REF=main` if you want latest.
 

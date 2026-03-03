@@ -19,6 +19,7 @@ PLAYGROUND_INSTALL_MODE="${PLAYGROUND_INSTALL_MODE:-no_warp}"
 MUJOCO_VERSION="${MUJOCO_VERSION:-3.3.4}"
 MUJOCO_MJX_VERSION="${MUJOCO_MJX_VERSION:-3.3.4}"
 INSTALL_WANDB="${INSTALL_WANDB:-0}"
+USE_MEDIAPY_SHIM="${USE_MEDIAPY_SHIM:-1}"
 
 # Some HPC images ship very old git versions without "-C".
 if git -C "${ROOT_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -83,6 +84,7 @@ echo "[bootstrap] mode      : ${PLAYGROUND_INSTALL_MODE}"
 echo "[bootstrap] mujoco    : ${MUJOCO_VERSION}"
 echo "[bootstrap] mjx       : ${MUJOCO_MJX_VERSION}"
 echo "[bootstrap] wandb     : ${INSTALL_WANDB}"
+echo "[bootstrap] media shim: ${USE_MEDIAPY_SHIM}"
 
 if command -v g++ >/dev/null 2>&1; then
   echo "[bootstrap] g++       : $(command -v g++)"
@@ -190,6 +192,17 @@ else
   fi
 
   python -m pip install "${PIP_FLAGS[@]}" --no-deps -e "${PLAYGROUND_DIR}"
+fi
+
+if [ "${USE_MEDIAPY_SHIM}" = "1" ]; then
+  cat > "${PLAYGROUND_DIR}/learning/mediapy.py" <<'PY'
+"""Headless mediapy shim for cluster training."""
+
+def write_video(*args, **kwargs):
+  # No-op on HPC; avoids importing IPython in real mediapy.
+  print("[mediapy-shim] write_video skipped.")
+PY
+  echo "[bootstrap] installed mediapy shim at ${PLAYGROUND_DIR}/learning/mediapy.py"
 fi
 
 echo "[bootstrap] done"
