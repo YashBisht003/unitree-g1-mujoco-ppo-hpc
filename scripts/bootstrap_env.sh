@@ -172,12 +172,16 @@ if [ "${BOOTSTRAP_OFFLINE}" = "1" ]; then
     exit 1
   fi
   apply_mjx_make_data_compat_shim
-  source "${VENV_DIR}/bin/activate"
+  VENV_PY="${VENV_DIR}/bin/python"
+  if [ ! -x "${VENV_PY}" ]; then
+    echo "ERROR: missing ${VENV_PY}. Re-run with BOOTSTRAP_OFFLINE=0 once."
+    exit 1
+  fi
   if [ "${USE_CUDA}" != "1" ]; then
     export JAX_PLATFORMS="${JAX_PLATFORMS:-cpu}"
     export JAX_PLATFORM_NAME="${JAX_PLATFORM_NAME:-cpu}"
   fi
-  python -c "import mujoco_playground; print('offline bootstrap ok')" >/dev/null
+  "${VENV_PY}" -c "import mujoco_playground; print('offline bootstrap ok')" >/dev/null
   echo "[bootstrap] offline validation passed"
   exit 0
 fi
@@ -210,11 +214,31 @@ if [ ! -d "${VENV_DIR}" ]; then
   "${PYTHON_BIN}" -m venv "${VENV_DIR}"
 fi
 
-source "${VENV_DIR}/bin/activate"
+VENV_PY="${VENV_DIR}/bin/python"
+if [ ! -x "${VENV_PY}" ]; then
+  echo "ERROR: venv python not found at ${VENV_PY}"
+  exit 1
+fi
 export PYTHONPYCACHEPREFIX="${VENV_DIR}/.pycache"
+echo "[bootstrap] venv py   : ${VENV_PY}"
+
+VENV_SITE="$("${VENV_PY}" - <<'PY'
+import sysconfig
+print(sysconfig.get_paths()["purelib"])
+PY
+)"
+echo "[bootstrap] venv site : ${VENV_SITE}"
+case "${VENV_SITE}" in
+  "${VENV_DIR}"/*) ;;
+  *)
+    echo "ERROR: venv site-packages is outside ${VENV_DIR}: ${VENV_SITE}"
+    echo "Deactivate nested envs and re-run bootstrap from a clean shell."
+    exit 1
+    ;;
+esac
 
 # Prevent incompatible core pin sets from reaching a confusing pip failure.
-"${PYTHON_BIN}" - "${JAX_VERSION}" "${FLAX_VERSION}" <<'PY'
+"${VENV_PY}" - "${JAX_VERSION}" "${FLAX_VERSION}" <<'PY'
 import sys
 
 def parse(v: str):
@@ -238,7 +262,7 @@ if jax_v < (0, 5, 1) and flax_v >= (0, 10, 6):
   raise SystemExit(1)
 PY
 
-python -m pip install "${PIP_FLAGS[@]}" --upgrade pip setuptools wheel
+"${VENV_PY}" -m pip install "${PIP_FLAGS[@]}" --upgrade pip setuptools wheel
 
 if [ ! -d "${PLAYGROUND_DIR}/.git" ]; then
   git "${GIT_ARGS[@]}" clone https://github.com/google-deepmind/mujoco_playground.git "${PLAYGROUND_DIR}"
@@ -248,24 +272,24 @@ git_in_repo "${PLAYGROUND_DIR}" fetch --all --tags
 git_in_repo "${PLAYGROUND_DIR}" checkout "${PLAYGROUND_REF}"
 apply_mjx_make_data_compat_shim
 
-python -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes "ml_dtypes==${ML_DTYPES_VERSION}"
+"${VENV_PY}" -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes "ml_dtypes==${ML_DTYPES_VERSION}"
 
 if [ "${USE_CUDA}" = "1" ]; then
   if [ "${JAX_CUDA_EXTRA}" = "cuda11_pip" ]; then
-    python -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes \
+    "${VENV_PY}" -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes \
       --find-links "${JAX_CUDA11_WHEELS_URL}" \
       "jax[${JAX_CUDA_EXTRA}]==${JAX_VERSION}" "jax==${JAX_VERSION}" "ml_dtypes==${ML_DTYPES_VERSION}"
   else
-    python -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes \
+    "${VENV_PY}" -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes \
       "jax[${JAX_CUDA_EXTRA}]==${JAX_VERSION}" "jax==${JAX_VERSION}" "jaxlib==${JAXLIB_VERSION}" "ml_dtypes==${ML_DTYPES_VERSION}"
   fi
 else
-  python -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes \
+  "${VENV_PY}" -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes \
     "jax==${JAX_VERSION}" "jaxlib==${JAXLIB_VERSION}" "ml_dtypes==${ML_DTYPES_VERSION}"
 fi
 
 if [ "${PLAYGROUND_INSTALL_MODE}" = "full" ]; then
-  python -m pip install \
+  "${VENV_PY}" -m pip install \
     "${PIP_FLAGS[@]}" \
     --prefer-binary \
     --only-binary=ml_dtypes \
@@ -275,7 +299,7 @@ if [ "${PLAYGROUND_INSTALL_MODE}" = "full" ]; then
 else
   # Old enterprise Linux nodes often cannot install warp-lang/mujoco>=3.5 wheels.
   # This path installs a JAX-only stack for train_jax_ppo.py.
-  python -m pip install \
+  "${VENV_PY}" -m pip install \
     "${PIP_FLAGS[@]}" \
     --prefer-binary \
     --only-binary=ml_dtypes \
@@ -283,7 +307,7 @@ else
     "mujoco==${MUJOCO_VERSION}" \
     "mujoco-mjx==${MUJOCO_MJX_VERSION}"
 
-  python -m pip install \
+  "${VENV_PY}" -m pip install \
     "${PIP_FLAGS[@]}" \
     --prefer-binary \
     "absl-py" \
@@ -298,10 +322,10 @@ else
     "tqdm"
 
   if [ "${INSTALL_WANDB}" = "1" ]; then
-    python -m pip install "${PIP_FLAGS[@]}" --prefer-binary wandb
+    "${VENV_PY}" -m pip install "${PIP_FLAGS[@]}" --prefer-binary wandb
   fi
 
-  python -m pip install "${PIP_FLAGS[@]}" --no-deps -e "${PLAYGROUND_DIR}"
+  "${VENV_PY}" -m pip install "${PIP_FLAGS[@]}" --no-deps -e "${PLAYGROUND_DIR}"
 fi
 
 if [ "${USE_MEDIAPY_SHIM}" = "1" ]; then
