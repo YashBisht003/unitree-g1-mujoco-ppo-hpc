@@ -8,6 +8,7 @@ PLAYGROUND_DIR="${ROOT_DIR}/mujoco_playground"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 PLAYGROUND_REF="${PLAYGROUND_REF:-f2159f3}"
 USE_CUDA="${USE_CUDA:-1}"
+BOOTSTRAP_OFFLINE="${BOOTSTRAP_OFFLINE:-0}"
 
 if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
   echo "ERROR: ${PYTHON_BIN} not found. Set PYTHON_BIN to a valid Python 3.10+ binary."
@@ -19,6 +20,20 @@ echo "[bootstrap] python    : ${PYTHON_BIN}"
 echo "[bootstrap] venv      : ${VENV_DIR}"
 echo "[bootstrap] ref       : ${PLAYGROUND_REF}"
 echo "[bootstrap] use_cuda  : ${USE_CUDA}"
+echo "[bootstrap] offline   : ${BOOTSTRAP_OFFLINE}"
+
+if [ "${BOOTSTRAP_OFFLINE}" = "1" ]; then
+  if [ ! -d "${VENV_DIR}" ] || [ ! -d "${PLAYGROUND_DIR}" ]; then
+    echo "ERROR: offline bootstrap requested but setup is incomplete."
+    echo "Run once on login node with BOOTSTRAP_OFFLINE=0:"
+    echo "  BOOTSTRAP_OFFLINE=0 bash scripts/bootstrap_env.sh"
+    exit 1
+  fi
+  source "${VENV_DIR}/bin/activate"
+  python -c "import mujoco_playground; print('offline bootstrap ok')" >/dev/null
+  echo "[bootstrap] offline validation passed"
+  exit 0
+fi
 
 if [ ! -d "${VENV_DIR}" ]; then
   "${PYTHON_BIN}" -m venv "${VENV_DIR}"

@@ -36,6 +36,7 @@ Preferred submit wrappers:
 
 ```bash
 cd unitree_g1_mujoco_ppo_hpc
+BOOTSTRAP_OFFLINE=0 bash scripts/bootstrap_env.sh   # one-time setup on login node
 bash scripts/submit_flat.sh
 ```
 
@@ -103,6 +104,7 @@ bash scripts/submit_flat.sh
 
 If your partition name differs (`gpu`, `hip-gpu`, etc.), use `PARTITION=<name> bash scripts/submit_flat.sh` and `PARTITION=<name> bash scripts/submit_rough.sh`.
 Memory is not hardcoded now; it uses scheduler defaults unless you pass `MEM=...`.
+Submit scripts default to `BOOTSTRAP_OFFLINE=1` (no internet required on compute nodes). Do one-time setup first on login node with `BOOTSTRAP_OFFLINE=0 bash scripts/bootstrap_env.sh`.
 
 By default, `bootstrap_env.sh` checks out MuJoCo Playground commit `f2159f3` for reproducibility. Override with `PLAYGROUND_REF=main` if you want latest.
 
