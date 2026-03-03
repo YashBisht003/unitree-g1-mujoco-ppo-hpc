@@ -19,6 +19,10 @@ chmod 755 logs || true
 # If your cluster needs module setup, load here.
 # module load conda-python/3.7
 
+# Sanitize inherited submit-shell conda/python vars.
+unset PYTHONHOME PYTHONPATH PYTHONSTARTUP PYTHONUSERBASE __PYVENV_LAUNCHER__ || true
+unset CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_PROMPT_MODIFIER CONDA_EXE CONDA_PYTHON_EXE CONDA_SHLVL _CE_M _CE_CONDA || true
+
 if [ -z "${FLAT_CKPT:-}" ]; then
   echo "ERROR: FLAT_CKPT is required for rough-terrain finetuning."
   echo "Submit with: sbatch --export=ALL,FLAT_CKPT=/abs/path/to/checkpoints slurm/g1_rough_gpu.sbatch"

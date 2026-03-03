@@ -14,6 +14,10 @@ if [ ! -d "${PLAYGROUND_DIR}" ]; then
   exit 1
 fi
 
+# Prevent inherited conda/python env vars from polluting this venv.
+unset PYTHONHOME PYTHONPATH PYTHONSTARTUP PYTHONUSERBASE __PYVENV_LAUNCHER__ || true
+unset CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_PROMPT_MODIFIER CONDA_EXE CONDA_PYTHON_EXE CONDA_SHLVL _CE_M _CE_CONDA || true
+
 source "${VENV_DIR}/bin/activate"
 cd "${PLAYGROUND_DIR}"
 

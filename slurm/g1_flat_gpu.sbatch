@@ -20,6 +20,10 @@ chmod 755 logs || true
 # Example for Param Ganga docs:
 # module load conda-python/3.7
 
+# Sanitize inherited submit-shell conda/python vars.
+unset PYTHONHOME PYTHONPATH PYTHONSTARTUP PYTHONUSERBASE __PYVENV_LAUNCHER__ || true
+unset CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_PROMPT_MODIFIER CONDA_EXE CONDA_PYTHON_EXE CONDA_SHLVL _CE_M _CE_CONDA || true
+
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-16}"
 export USE_CUDA=1
 

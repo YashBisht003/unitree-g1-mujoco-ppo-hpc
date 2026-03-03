@@ -45,6 +45,10 @@ if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
   exit 1
 fi
 
+# Prevent inherited conda/python env vars from polluting this venv.
+unset PYTHONHOME PYTHONPATH PYTHONSTARTUP PYTHONUSERBASE __PYVENV_LAUNCHER__ || true
+unset CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_PROMPT_MODIFIER CONDA_EXE CONDA_PYTHON_EXE CONDA_SHLVL _CE_M _CE_CONDA || true
+
 PY_VER="$("${PYTHON_BIN}" - <<'PY'
 import sys
 print(".".join(map(str, sys.version_info[:3])))
