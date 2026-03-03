@@ -10,9 +10,11 @@
 #SBATCH --error=logs/%x-%j.err
 
 set -euo pipefail
+umask 022
 
 cd "${SLURM_SUBMIT_DIR}"
 mkdir -p logs
+chmod 755 logs || true
 
 # If your cluster needs module setup, load here.
 # Example for Param Ganga docs:
