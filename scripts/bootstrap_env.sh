@@ -46,6 +46,48 @@ git_in_repo() {
   fi
 }
 
+apply_mjx_make_data_compat_shim() {
+  local target="${PLAYGROUND_DIR}/mujoco_playground/_src/mjx_env.py"
+  if [ ! -f "${target}" ]; then
+    echo "[bootstrap] warning: ${target} not found; skipping mjx make_data compat shim."
+    return 0
+  fi
+
+  "${PYTHON_BIN}" - "${target}" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+marker = "__codex_mjx_make_data_compat__"
+if marker in text:
+    print("[bootstrap] mjx make_data compat shim already present")
+    raise SystemExit(0)
+
+pattern = r'(?m)^(?P<indent>\s*)data = mjx\.make_data\(model, impl=impl, nconmax=nconmax, njmax=njmax\)\s*$'
+match = re.search(pattern, text)
+if not match:
+    print("[bootstrap] mjx make_data compat target not found; leaving file unchanged")
+    raise SystemExit(0)
+
+indent = match.group("indent")
+replacement = (
+    f"{indent}# {marker}\n"
+    f"{indent}try:\n"
+    f"{indent}  data = mjx.make_data(model, impl=impl, nconmax=nconmax, njmax=njmax)\n"
+    f"{indent}except TypeError:\n"
+    f"{indent}  try:\n"
+    f"{indent}    data = mjx.make_data(model, impl=impl)\n"
+    f"{indent}  except TypeError:\n"
+    f"{indent}    data = mjx.make_data(model)\n"
+)
+text = re.sub(pattern, replacement, text, count=1)
+path.write_text(text)
+print(f"[bootstrap] installed mjx make_data compat shim at {path}")
+PY
+}
+
 if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
   echo "ERROR: ${PYTHON_BIN} not found. Set PYTHON_BIN to a valid Python 3.10+ binary."
   exit 1
@@ -113,7 +155,12 @@ if [ "${BOOTSTRAP_OFFLINE}" = "1" ]; then
     echo "Run once on login node with BOOTSTRAP_OFFLINE=0 to pre-download assets."
     exit 1
   fi
+  apply_mjx_make_data_compat_shim
   source "${VENV_DIR}/bin/activate"
+  if [ "${USE_CUDA}" != "1" ]; then
+    export JAX_PLATFORMS="${JAX_PLATFORMS:-cpu}"
+    export JAX_PLATFORM_NAME="${JAX_PLATFORM_NAME:-cpu}"
+  fi
   python -c "import mujoco_playground; print('offline bootstrap ok')" >/dev/null
   echo "[bootstrap] offline validation passed"
   exit 0
@@ -158,6 +205,7 @@ fi
 
 git_in_repo "${PLAYGROUND_DIR}" fetch --all --tags
 git_in_repo "${PLAYGROUND_DIR}" checkout "${PLAYGROUND_REF}"
+apply_mjx_make_data_compat_shim
 
 python -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes "ml_dtypes==${ML_DTYPES_VERSION}"
 
