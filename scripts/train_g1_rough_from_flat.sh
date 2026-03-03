@@ -41,6 +41,11 @@ USE_WANDB="${USE_WANDB:-0}"
 export MUJOCO_GL="${MUJOCO_GL:-egl}"
 export XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
 export JAX_DEFAULT_MATMUL_PRECISION="${JAX_DEFAULT_MATMUL_PRECISION:-highest}"
+if [ "${USE_CUDA:-1}" != "1" ]; then
+  export JAX_PLATFORMS="${JAX_PLATFORMS:-cpu}"
+  export JAX_PLATFORM_NAME="${JAX_PLATFORM_NAME:-cpu}"
+  echo "[train-rough] forcing CPU backend (USE_CUDA=${USE_CUDA:-0})"
+fi
 
 if [ "${USE_TB}" = "1" ]; then TB_FLAG="True"; else TB_FLAG="False"; fi
 if [ "${USE_WANDB}" = "1" ]; then WANDB_FLAG="True"; else WANDB_FLAG="False"; fi

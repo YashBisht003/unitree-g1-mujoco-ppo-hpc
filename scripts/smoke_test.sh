@@ -15,6 +15,11 @@ cd "${ROOT_DIR}/mujoco_playground"
 
 export MUJOCO_GL="${MUJOCO_GL:-egl}"
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
+if [ "${USE_CUDA:-1}" != "1" ]; then
+  export JAX_PLATFORMS="${JAX_PLATFORMS:-cpu}"
+  export JAX_PLATFORM_NAME="${JAX_PLATFORM_NAME:-cpu}"
+  echo "[smoke] forcing CPU backend (USE_CUDA=${USE_CUDA:-0})"
+fi
 
 python -c "import jax; print('jax_backend=', jax.default_backend())"
 python -c "from mujoco_playground import locomotion; env=locomotion.load('G1JoystickFlatTerrain'); print('env_ok', env.action_size)"

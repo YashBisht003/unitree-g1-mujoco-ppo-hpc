@@ -30,7 +30,7 @@ if [ -z "${FLAT_CKPT:-}" ]; then
 fi
 
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-16}"
-export USE_CUDA=1
+export USE_CUDA="${USE_CUDA:-1}"
 
 export NUM_ENVS="${NUM_ENVS:-8192}"
 export NUM_EVAL_ENVS="${NUM_EVAL_ENVS:-128}"

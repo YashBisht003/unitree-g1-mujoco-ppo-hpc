@@ -113,6 +113,7 @@ Bootstrap defaults to `USE_MEDIAPY_SHIM=1` in this HPC setup to avoid `mediapy` 
 Bootstrap defaults to `USE_WANDB_SHIM=1` with `INSTALL_WANDB=0`, so training works without the `wandb` package when `--use_wandb=False`.
 Bootstrap/training set `PYTHONDONTWRITEBYTECODE=1` and `PYTHONPYCACHEPREFIX=.venv/.pycache` to avoid writing bytecode into external conda/system stdlib paths.
 Bootstrap now pre-downloads `mujoco_menagerie` on login node using git-compatible clone/checkout logic (works on old git without `-C`), and offline mode validates that assets are present before submit.
+If your GPU nodes report `cudaErrorInsufficientDriver`, submit with `USE_CUDA=0` to force JAX CPU backend (`JAX_PLATFORMS=cpu`) while keeping the same training pipeline.
 
 By default, `bootstrap_env.sh` checks out MuJoCo Playground commit `d886c80` for reproducibility and MuJoCo `3.3.4` compatibility (avoids the `Element 'contact'` schema error). Override with `PLAYGROUND_REF=main` if you want latest.
 
