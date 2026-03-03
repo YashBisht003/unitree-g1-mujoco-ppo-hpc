@@ -32,11 +32,15 @@ MEM_PRINT="${MEM:-<cluster-default>}"
 echo "[submit-flat] partition=${PARTITION} gpus=${GPUS} cpus=${CPUS_PER_TASK} mem=${MEM_PRINT} time=${TIME_LIMIT}"
 echo "[submit-flat] script=${SBATCH_SCRIPT}"
 
+# Ensure stdout/stderr target directory exists before Slurm opens log files.
+mkdir -p "${ROOT_DIR}/logs"
+
 SBATCH_ARGS=(
   "--partition=${PARTITION}"
   "--gres=gpu:${GPUS}"
   "--cpus-per-task=${CPUS_PER_TASK}"
   "--time=${TIME_LIMIT}"
+  "--chdir=${ROOT_DIR}"
   "--export=$(IFS=,; echo "${EXPORT_VARS[*]}")"
 )
 
