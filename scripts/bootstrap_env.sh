@@ -100,6 +100,88 @@ print(f"[bootstrap] installed mjx make_data compat shim at {path}")
 PY
 }
 
+apply_jax_clip_kwarg_compat_shim() {
+  local src_dir="${PLAYGROUND_DIR}/mujoco_playground/_src"
+  if [ ! -d "${src_dir}" ]; then
+    echo "[bootstrap] warning: ${src_dir} not found; skipping clip kwarg compat shim."
+    return 0
+  fi
+
+  "${PYTHON_BIN}" - "${src_dir}" <<'PY'
+import pathlib
+import re
+import sys
+
+root = pathlib.Path(sys.argv[1])
+
+
+def rewrite_clip_calls(text: str):
+    tokens = ("jp.clip(", "jnp.clip(")
+    out = []
+    i = 0
+    total_changes = 0
+    n = len(text)
+
+    while i < n:
+        next_hits = []
+        for tok in tokens:
+            pos = text.find(tok, i)
+            if pos != -1:
+                next_hits.append((pos, tok))
+        if not next_hits:
+            out.append(text[i:])
+            break
+
+        pos, tok = min(next_hits, key=lambda item: item[0])
+        out.append(text[i : pos + len(tok)])
+
+        args_start = pos + len(tok)
+        depth = 1
+        j = args_start
+        while j < n and depth > 0:
+            ch = text[j]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            j += 1
+
+        if depth != 0:
+            out.append(text[args_start:])
+            i = n
+            break
+
+        args = text[args_start : j - 1]
+        new_args = re.sub(r"(?<![A-Za-z0-9_])min\s*=", "a_min=", args)
+        new_args = re.sub(r"(?<![A-Za-z0-9_])max\s*=", "a_max=", new_args)
+        if new_args != args:
+            total_changes += 1
+        out.append(new_args)
+        out.append(")")
+        i = j
+
+    return "".join(out), total_changes
+
+
+changed_files = 0
+changed_calls = 0
+for path in root.rglob("*.py"):
+    text = path.read_text()
+    new_text, delta = rewrite_clip_calls(text)
+    if delta:
+        path.write_text(new_text)
+        changed_files += 1
+        changed_calls += delta
+
+if changed_files:
+    print(
+        f"[bootstrap] installed clip kwarg compat shim in {changed_files} file(s), {changed_calls} call(s)"
+    )
+else:
+    print("[bootstrap] clip kwarg compat shim already satisfied")
+PY
+}
+
 if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
   echo "ERROR: ${PYTHON_BIN} not found. Set PYTHON_BIN to a valid Python 3.10+ binary."
   exit 1
@@ -174,6 +256,7 @@ if [ "${BOOTSTRAP_OFFLINE}" = "1" ]; then
     exit 1
   fi
   apply_mjx_make_data_compat_shim
+  apply_jax_clip_kwarg_compat_shim
   VENV_PY="${VENV_DIR}/bin/python"
   if [ ! -x "${VENV_PY}" ]; then
     echo "ERROR: missing ${VENV_PY}. Re-run with BOOTSTRAP_OFFLINE=0 once."
@@ -308,6 +391,7 @@ fi
 git_in_repo "${PLAYGROUND_DIR}" fetch --all --tags
 git_in_repo "${PLAYGROUND_DIR}" checkout "${PLAYGROUND_REF}"
 apply_mjx_make_data_compat_shim
+apply_jax_clip_kwarg_compat_shim
 
 if [ -n "${NUMPY_VERSION}" ]; then
   "${VENV_PY}" -B -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary -c "${CONSTRAINTS_FILE}" "numpy==${NUMPY_VERSION}"
