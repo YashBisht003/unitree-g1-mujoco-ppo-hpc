@@ -110,6 +110,7 @@ Bootstrap defaults to `PIP_NO_CACHE_DIR=1` to reduce disk usage under quota limi
 Bootstrap defaults to `PLAYGROUND_INSTALL_MODE=no_warp`, which skips `warp-lang` and installs a JAX-only stack compatible with older HPC nodes.
 Bootstrap also pins `jax/jaxlib` and `flax` to compatible versions to avoid plugin/version drift.
 Bootstrap defaults to `USE_MEDIAPY_SHIM=1` in this HPC setup to avoid `mediapy` importing IPython/pyexpat during training startup.
+Bootstrap defaults to `USE_WANDB_SHIM=1` with `INSTALL_WANDB=0`, so training works without the `wandb` package when `--use_wandb=False`.
 Bootstrap/training set `PYTHONDONTWRITEBYTECODE=1` and `PYTHONPYCACHEPREFIX=.venv/.pycache` to avoid writing bytecode into external conda/system stdlib paths.
 Bootstrap now pre-downloads `mujoco_menagerie` on login node using git-compatible clone/checkout logic (works on old git without `-C`), and offline mode validates that assets are present before submit.
 

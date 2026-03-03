@@ -24,6 +24,7 @@ MUJOCO_VERSION="${MUJOCO_VERSION:-3.3.4}"
 MUJOCO_MJX_VERSION="${MUJOCO_MJX_VERSION:-3.3.4}"
 INSTALL_WANDB="${INSTALL_WANDB:-0}"
 USE_MEDIAPY_SHIM="${USE_MEDIAPY_SHIM:-1}"
+USE_WANDB_SHIM="${USE_WANDB_SHIM:-1}"
 
 # Some HPC images ship very old git versions without "-C".
 if git -C "${ROOT_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -92,6 +93,7 @@ echo "[bootstrap] mujoco    : ${MUJOCO_VERSION}"
 echo "[bootstrap] mjx       : ${MUJOCO_MJX_VERSION}"
 echo "[bootstrap] wandb     : ${INSTALL_WANDB}"
 echo "[bootstrap] media shim: ${USE_MEDIAPY_SHIM}"
+echo "[bootstrap] wandb shim: ${USE_WANDB_SHIM}"
 
 if command -v g++ >/dev/null 2>&1; then
   echo "[bootstrap] g++       : $(command -v g++)"
@@ -218,6 +220,44 @@ def write_video(*args, **kwargs):
   print("[mediapy-shim] write_video skipped.")
 PY
   echo "[bootstrap] installed mediapy shim at ${PLAYGROUND_DIR}/learning/mediapy.py"
+fi
+
+if [ "${USE_WANDB_SHIM}" = "1" ] && [ "${INSTALL_WANDB}" != "1" ]; then
+  cat > "${PLAYGROUND_DIR}/learning/wandb.py" <<'PY'
+"""Headless wandb shim for cluster training when --use_wandb=False."""
+
+
+class _Run:
+  def log(self, *args, **kwargs):
+    return None
+
+  def finish(self, *args, **kwargs):
+    return None
+
+  def __enter__(self):
+    return self
+
+  def __exit__(self, exc_type, exc, tb):
+    return False
+
+
+run = _Run()
+config = {}
+summary = {}
+
+
+def init(*args, **kwargs):
+  return run
+
+
+def log(*args, **kwargs):
+  return None
+
+
+def finish(*args, **kwargs):
+  return None
+PY
+  echo "[bootstrap] installed wandb shim at ${PLAYGROUND_DIR}/learning/wandb.py"
 fi
 
 # Pre-download menagerie on login node so compute-node jobs can run fully offline.
