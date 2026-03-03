@@ -36,16 +36,23 @@ if git -C "${ROOT_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 else
   GIT_SUPPORTS_C=0
 fi
+GIT_USER_NAME="${GIT_USER_NAME:-hpc-user}"
+GIT_USER_EMAIL="${GIT_USER_EMAIL:-hpc-user@localhost}"
+GIT_DISABLE_REFLOG="${GIT_DISABLE_REFLOG:-1}"
+GIT_ARGS=(-c "user.name=${GIT_USER_NAME}" -c "user.email=${GIT_USER_EMAIL}")
+if [ "${GIT_DISABLE_REFLOG}" = "1" ]; then
+  GIT_ARGS+=(-c "core.logAllRefUpdates=false")
+fi
 
 git_in_repo() {
   local repo="$1"
   shift
   if [ "${GIT_SUPPORTS_C}" = "1" ]; then
-    git -C "${repo}" "$@"
+    git "${GIT_ARGS[@]}" -C "${repo}" "$@"
   else
     (
       cd "${repo}"
-      git "$@"
+      git "${GIT_ARGS[@]}" "$@"
     )
   fi
 }
@@ -144,6 +151,7 @@ echo "[bootstrap] mjx       : ${MUJOCO_MJX_VERSION}"
 echo "[bootstrap] wandb     : ${INSTALL_WANDB}"
 echo "[bootstrap] media shim: ${USE_MEDIAPY_SHIM}"
 echo "[bootstrap] wandb shim: ${USE_WANDB_SHIM}"
+echo "[bootstrap] git ident : ${GIT_USER_NAME} <${GIT_USER_EMAIL}> reflog_off=${GIT_DISABLE_REFLOG}"
 
 if command -v g++ >/dev/null 2>&1; then
   echo "[bootstrap] g++       : $(command -v g++)"
@@ -233,7 +241,7 @@ PY
 python -m pip install "${PIP_FLAGS[@]}" --upgrade pip setuptools wheel
 
 if [ ! -d "${PLAYGROUND_DIR}/.git" ]; then
-  git clone https://github.com/google-deepmind/mujoco_playground.git "${PLAYGROUND_DIR}"
+  git "${GIT_ARGS[@]}" clone https://github.com/google-deepmind/mujoco_playground.git "${PLAYGROUND_DIR}"
 fi
 
 git_in_repo "${PLAYGROUND_DIR}" fetch --all --tags
@@ -348,7 +356,7 @@ fi
 # Pre-download menagerie on login node so compute-node jobs can run fully offline.
 if [ ! -d "${MENAGERIE_DIR}/.git" ]; then
   mkdir -p "$(dirname "${MENAGERIE_DIR}")"
-  git clone --depth 1 "${MENAGERIE_URL}" "${MENAGERIE_DIR}"
+  git "${GIT_ARGS[@]}" clone --depth 1 "${MENAGERIE_URL}" "${MENAGERIE_DIR}"
 fi
 git_in_repo "${MENAGERIE_DIR}" fetch --all --tags || true
 git_in_repo "${MENAGERIE_DIR}" checkout "${MENAGERIE_COMMIT}"

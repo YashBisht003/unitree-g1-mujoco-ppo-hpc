@@ -120,6 +120,7 @@ If your GPU nodes report `cudaErrorInsufficientDriver`, submit with `USE_CUDA=0`
 When `USE_CUDA=0`, submit wrappers choose CPU sbatch files (`slurm/g1_flat_cpu.sbatch` / `slurm/g1_rough_cpu.sbatch`) and do not request GPU resources.
 If your cluster uses a non-`cpu` partition name for CPU-only jobs, pass it explicitly, e.g. `USE_CUDA=0 PARTITION=<name> bash scripts/submit_flat.sh`.
 Bootstrap now fails fast for incompatible pin sets (example: `JAX_VERSION<0.5.1` with `FLAX_VERSION>=0.10.6`).
+Bootstrap git operations now set explicit temporary git identity and can disable reflogs to avoid HPC errors like `unable to look up current user in the passwd file`.
 
 By default, `bootstrap_env.sh` checks out MuJoCo Playground commit `d886c80` for reproducibility and MuJoCo `3.3.4` compatibility (avoids the `Element 'contact'` schema error). Override with `PLAYGROUND_REF=main` if you want latest.
 
