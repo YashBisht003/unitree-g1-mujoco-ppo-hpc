@@ -5,6 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${ROOT_DIR}/.venv"
 PLAYGROUND_DIR="${ROOT_DIR}/mujoco_playground"
 MENAGERIE_DIR="${PLAYGROUND_DIR}/mujoco_playground/external_deps/mujoco_menagerie"
+MENAGERIE_URL="${MENAGERIE_URL:-https://github.com/deepmind/mujoco_menagerie.git}"
+MENAGERIE_COMMIT="${MENAGERIE_COMMIT:-1b86ece576591213e2b666ebf59508454200ca97}"
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 PLAYGROUND_REF="${PLAYGROUND_REF:-f2159f3}"
@@ -74,6 +76,8 @@ echo "[bootstrap] python    : ${PYTHON_BIN}"
 echo "[bootstrap] venv      : ${VENV_DIR}"
 echo "[bootstrap] ref       : ${PLAYGROUND_REF}"
 echo "[bootstrap] menagerie : ${MENAGERIE_DIR}"
+echo "[bootstrap] menag url : ${MENAGERIE_URL}"
+echo "[bootstrap] menag sha : ${MENAGERIE_COMMIT}"
 echo "[bootstrap] use_cuda  : ${USE_CUDA}"
 echo "[bootstrap] offline   : ${BOOTSTRAP_OFFLINE}"
 echo "[bootstrap] ml_dtypes : ${ML_DTYPES_VERSION}"
@@ -216,11 +220,13 @@ PY
 fi
 
 # Pre-download menagerie on login node so compute-node jobs can run fully offline.
-python - <<'PY'
-from mujoco_playground._src import mjx_env
-mjx_env.ensure_menagerie_exists()
-print("menagerie ready:", mjx_env.MENAGERIE_PATH)
-PY
+if [ ! -d "${MENAGERIE_DIR}/.git" ]; then
+  mkdir -p "$(dirname "${MENAGERIE_DIR}")"
+  git clone --depth 1 "${MENAGERIE_URL}" "${MENAGERIE_DIR}"
+fi
+git_in_repo "${MENAGERIE_DIR}" fetch --all --tags || true
+git_in_repo "${MENAGERIE_DIR}" checkout "${MENAGERIE_COMMIT}"
+echo "[bootstrap] menagerie ready at ${MENAGERIE_DIR}"
 
 echo "[bootstrap] done"
 echo "[bootstrap] activate with: source ${VENV_DIR}/bin/activate"

@@ -111,7 +111,7 @@ Bootstrap defaults to `PLAYGROUND_INSTALL_MODE=no_warp`, which skips `warp-lang`
 Bootstrap also pins `jax/jaxlib` and `flax` to compatible versions to avoid plugin/version drift.
 Bootstrap defaults to `USE_MEDIAPY_SHIM=1` in this HPC setup to avoid `mediapy` importing IPython/pyexpat during training startup.
 Bootstrap/training set `PYTHONDONTWRITEBYTECODE=1` and `PYTHONPYCACHEPREFIX=.venv/.pycache` to avoid writing bytecode into external conda/system stdlib paths.
-Bootstrap now pre-downloads `mujoco_menagerie` on login node, and offline mode validates that assets are present before submit.
+Bootstrap now pre-downloads `mujoco_menagerie` on login node using git-compatible clone/checkout logic (works on old git without `-C`), and offline mode validates that assets are present before submit.
 
 By default, `bootstrap_env.sh` checks out MuJoCo Playground commit `f2159f3` for reproducibility. Override with `PLAYGROUND_REF=main` if you want latest.
 
