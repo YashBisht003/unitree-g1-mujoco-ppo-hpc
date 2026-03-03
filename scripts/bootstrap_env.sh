@@ -15,7 +15,9 @@ USE_CUDA="${USE_CUDA:-1}"
 BOOTSTRAP_OFFLINE="${BOOTSTRAP_OFFLINE:-0}"
 ML_DTYPES_VERSION="${ML_DTYPES_VERSION:-0.5.1}"
 JAX_VERSION="${JAX_VERSION:-0.5.3}"
+JAXLIB_VERSION="${JAXLIB_VERSION:-${JAX_VERSION}}"
 JAX_CUDA_EXTRA="${JAX_CUDA_EXTRA:-cuda12}"
+JAX_CUDA11_WHEELS_URL="${JAX_CUDA11_WHEELS_URL:-https://storage.googleapis.com/jax-releases/jax_cuda_releases.html}"
 BRAX_VERSION="${BRAX_VERSION:-0.12.5}"
 FLAX_VERSION="${FLAX_VERSION:-0.10.6}"
 ORBAX_VERSION="${ORBAX_VERSION:-0.11.22}"
@@ -128,7 +130,9 @@ echo "[bootstrap] use_cuda  : ${USE_CUDA}"
 echo "[bootstrap] offline   : ${BOOTSTRAP_OFFLINE}"
 echo "[bootstrap] ml_dtypes : ${ML_DTYPES_VERSION}"
 echo "[bootstrap] jax       : ${JAX_VERSION}"
+echo "[bootstrap] jaxlib    : ${JAXLIB_VERSION}"
 echo "[bootstrap] jax extra : ${JAX_CUDA_EXTRA}"
+echo "[bootstrap] cuda11 whl: ${JAX_CUDA11_WHEELS_URL}"
 echo "[bootstrap] brax      : ${BRAX_VERSION}"
 echo "[bootstrap] flax      : ${FLAX_VERSION}"
 echo "[bootstrap] orbax     : ${ORBAX_VERSION}"
@@ -239,11 +243,17 @@ apply_mjx_make_data_compat_shim
 python -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes "ml_dtypes==${ML_DTYPES_VERSION}"
 
 if [ "${USE_CUDA}" = "1" ]; then
-  python -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes \
-    "jax[${JAX_CUDA_EXTRA}]==${JAX_VERSION}" "jax==${JAX_VERSION}" "jaxlib==${JAX_VERSION}" "ml_dtypes==${ML_DTYPES_VERSION}"
+  if [ "${JAX_CUDA_EXTRA}" = "cuda11_pip" ]; then
+    python -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes \
+      --find-links "${JAX_CUDA11_WHEELS_URL}" \
+      "jax[${JAX_CUDA_EXTRA}]==${JAX_VERSION}" "jax==${JAX_VERSION}" "ml_dtypes==${ML_DTYPES_VERSION}"
+  else
+    python -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes \
+      "jax[${JAX_CUDA_EXTRA}]==${JAX_VERSION}" "jax==${JAX_VERSION}" "jaxlib==${JAXLIB_VERSION}" "ml_dtypes==${ML_DTYPES_VERSION}"
+  fi
 else
   python -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes \
-    "jax==${JAX_VERSION}" "jaxlib==${JAX_VERSION}" "ml_dtypes==${ML_DTYPES_VERSION}"
+    "jax==${JAX_VERSION}" "jaxlib==${JAXLIB_VERSION}" "ml_dtypes==${ML_DTYPES_VERSION}"
 fi
 
 if [ "${PLAYGROUND_INSTALL_MODE}" = "full" ]; then
@@ -268,8 +278,6 @@ else
   python -m pip install \
     "${PIP_FLAGS[@]}" \
     --prefer-binary \
-    "jax==${JAX_VERSION}" \
-    "jaxlib==${JAX_VERSION}" \
     "absl-py" \
     "brax==${BRAX_VERSION}" \
     "etils" \

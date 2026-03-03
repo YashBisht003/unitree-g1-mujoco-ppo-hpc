@@ -110,7 +110,7 @@ Submit scripts default to `BOOTSTRAP_OFFLINE=1` (no internet required on compute
 For older login nodes (e.g., GCC 4.8), bootstrap pins `ml_dtypes` to binary wheel (`0.5.1`) to avoid C++17 source builds.
 Bootstrap defaults to `PIP_NO_CACHE_DIR=1` to reduce disk usage under quota limits.
 Bootstrap defaults to `PLAYGROUND_INSTALL_MODE=no_warp`, which skips `warp-lang` and installs a JAX-only stack compatible with older HPC nodes.
-Bootstrap also pins `jax/jaxlib`, `flax`, and `orbax-checkpoint` to compatible versions to avoid plugin/version drift. CUDA JAX extra is configurable via `JAX_CUDA_EXTRA` (default `cuda12`).
+Bootstrap also pins `jax/jaxlib`, `flax`, and `orbax-checkpoint` to compatible versions to avoid plugin/version drift. CUDA JAX extra is configurable via `JAX_CUDA_EXTRA` (default `cuda12`); for legacy V100-style stacks you can use `JAX_CUDA_EXTRA=cuda11_pip` with coherent older pins.
 Bootstrap defaults to `USE_MEDIAPY_SHIM=1` in this HPC setup to avoid `mediapy` importing IPython/pyexpat during training startup.
 Bootstrap defaults to `USE_WANDB_SHIM=1` with `INSTALL_WANDB=0`, so training works without the `wandb` package when `--use_wandb=False`.
 Bootstrap also installs an MJX `make_data` compatibility shim in MuJoCo Playground so `mujoco-mjx==3.3.4` works across API differences (`nconmax`/`njmax` kwargs).
