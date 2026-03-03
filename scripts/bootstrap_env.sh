@@ -15,6 +15,7 @@ USE_CUDA="${USE_CUDA:-1}"
 BOOTSTRAP_OFFLINE="${BOOTSTRAP_OFFLINE:-0}"
 ML_DTYPES_VERSION="${ML_DTYPES_VERSION:-0.5.1}"
 JAX_VERSION="${JAX_VERSION:-0.5.3}"
+JAX_CUDA_EXTRA="${JAX_CUDA_EXTRA:-cuda12}"
 BRAX_VERSION="${BRAX_VERSION:-0.12.5}"
 FLAX_VERSION="${FLAX_VERSION:-0.10.6}"
 REQUIRE_CXX17="${REQUIRE_CXX17:-0}"
@@ -126,6 +127,7 @@ echo "[bootstrap] use_cuda  : ${USE_CUDA}"
 echo "[bootstrap] offline   : ${BOOTSTRAP_OFFLINE}"
 echo "[bootstrap] ml_dtypes : ${ML_DTYPES_VERSION}"
 echo "[bootstrap] jax       : ${JAX_VERSION}"
+echo "[bootstrap] jax extra : ${JAX_CUDA_EXTRA}"
 echo "[bootstrap] brax      : ${BRAX_VERSION}"
 echo "[bootstrap] flax      : ${FLAX_VERSION}"
 echo "[bootstrap] cxx17 req : ${REQUIRE_CXX17}"
@@ -197,6 +199,31 @@ fi
 source "${VENV_DIR}/bin/activate"
 export PYTHONPYCACHEPREFIX="${VENV_DIR}/.pycache"
 
+# Prevent incompatible core pin sets from reaching a confusing pip failure.
+"${PYTHON_BIN}" - "${JAX_VERSION}" "${FLAX_VERSION}" <<'PY'
+import sys
+
+def parse(v: str):
+  parts = []
+  for token in v.split("."):
+    digits = "".join(ch for ch in token if ch.isdigit())
+    parts.append(int(digits) if digits else 0)
+  while len(parts) < 3:
+    parts.append(0)
+  return tuple(parts[:3])
+
+jax_v = parse(sys.argv[1])
+flax_v = parse(sys.argv[2])
+
+if jax_v < (0, 5, 1) and flax_v >= (0, 10, 6):
+  print("ERROR: incompatible pins: flax>=0.10.6 requires jax>=0.5.1.")
+  print("Current values: JAX_VERSION=%s FLAX_VERSION=%s" % (sys.argv[1], sys.argv[2]))
+  print("Do one of these:")
+  print("  1) Keep JAX_VERSION>=0.5.1 (current default path)")
+  print("  2) Move to a full legacy stack branch (older flax/brax/playground pins)")
+  raise SystemExit(1)
+PY
+
 python -m pip install "${PIP_FLAGS[@]}" --upgrade pip setuptools wheel
 
 if [ ! -d "${PLAYGROUND_DIR}/.git" ]; then
@@ -211,7 +238,7 @@ python -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=
 
 if [ "${USE_CUDA}" = "1" ]; then
   python -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes \
-    "jax[cuda12]==${JAX_VERSION}" "jax==${JAX_VERSION}" "jaxlib==${JAX_VERSION}" "ml_dtypes==${ML_DTYPES_VERSION}"
+    "jax[${JAX_CUDA_EXTRA}]==${JAX_VERSION}" "jax==${JAX_VERSION}" "jaxlib==${JAX_VERSION}" "ml_dtypes==${ML_DTYPES_VERSION}"
 else
   python -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes \
     "jax==${JAX_VERSION}" "jaxlib==${JAX_VERSION}" "ml_dtypes==${ML_DTYPES_VERSION}"

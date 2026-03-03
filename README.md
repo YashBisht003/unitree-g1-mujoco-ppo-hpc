@@ -110,7 +110,7 @@ Submit scripts default to `BOOTSTRAP_OFFLINE=1` (no internet required on compute
 For older login nodes (e.g., GCC 4.8), bootstrap pins `ml_dtypes` to binary wheel (`0.5.1`) to avoid C++17 source builds.
 Bootstrap defaults to `PIP_NO_CACHE_DIR=1` to reduce disk usage under quota limits.
 Bootstrap defaults to `PLAYGROUND_INSTALL_MODE=no_warp`, which skips `warp-lang` and installs a JAX-only stack compatible with older HPC nodes.
-Bootstrap also pins `jax/jaxlib` and `flax` to compatible versions to avoid plugin/version drift.
+Bootstrap also pins `jax/jaxlib` and `flax` to compatible versions to avoid plugin/version drift. CUDA JAX extra is configurable via `JAX_CUDA_EXTRA` (default `cuda12`).
 Bootstrap defaults to `USE_MEDIAPY_SHIM=1` in this HPC setup to avoid `mediapy` importing IPython/pyexpat during training startup.
 Bootstrap defaults to `USE_WANDB_SHIM=1` with `INSTALL_WANDB=0`, so training works without the `wandb` package when `--use_wandb=False`.
 Bootstrap also installs an MJX `make_data` compatibility shim in MuJoCo Playground so `mujoco-mjx==3.3.4` works across API differences (`nconmax`/`njmax` kwargs).
@@ -119,6 +119,7 @@ Bootstrap now pre-downloads `mujoco_menagerie` on login node using git-compatibl
 If your GPU nodes report `cudaErrorInsufficientDriver`, submit with `USE_CUDA=0` to force JAX CPU backend (`JAX_PLATFORMS=cpu`) while keeping the same training pipeline. Slurm scripts also auto-fallback to CPU when `nvidia-smi` shows driver major `< 525` or is unavailable on the node.
 When `USE_CUDA=0`, submit wrappers choose CPU sbatch files (`slurm/g1_flat_cpu.sbatch` / `slurm/g1_rough_cpu.sbatch`) and do not request GPU resources.
 If your cluster uses a non-`cpu` partition name for CPU-only jobs, pass it explicitly, e.g. `USE_CUDA=0 PARTITION=<name> bash scripts/submit_flat.sh`.
+Bootstrap now fails fast for incompatible pin sets (example: `JAX_VERSION<0.5.1` with `FLAX_VERSION>=0.10.6`).
 
 By default, `bootstrap_env.sh` checks out MuJoCo Playground commit `d886c80` for reproducibility and MuJoCo `3.3.4` compatibility (avoids the `Element 'contact'` schema error). Override with `PLAYGROUND_REF=main` if you want latest.
 
