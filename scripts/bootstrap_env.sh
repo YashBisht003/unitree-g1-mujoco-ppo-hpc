@@ -18,6 +18,7 @@ JAX_VERSION="${JAX_VERSION:-0.5.3}"
 JAX_CUDA_EXTRA="${JAX_CUDA_EXTRA:-cuda12}"
 BRAX_VERSION="${BRAX_VERSION:-0.12.5}"
 FLAX_VERSION="${FLAX_VERSION:-0.10.6}"
+ORBAX_VERSION="${ORBAX_VERSION:-0.11.22}"
 REQUIRE_CXX17="${REQUIRE_CXX17:-0}"
 PIP_NO_CACHE_DIR="${PIP_NO_CACHE_DIR:-1}"
 PLAYGROUND_INSTALL_MODE="${PLAYGROUND_INSTALL_MODE:-no_warp}"
@@ -130,6 +131,7 @@ echo "[bootstrap] jax       : ${JAX_VERSION}"
 echo "[bootstrap] jax extra : ${JAX_CUDA_EXTRA}"
 echo "[bootstrap] brax      : ${BRAX_VERSION}"
 echo "[bootstrap] flax      : ${FLAX_VERSION}"
+echo "[bootstrap] orbax     : ${ORBAX_VERSION}"
 echo "[bootstrap] cxx17 req : ${REQUIRE_CXX17}"
 echo "[bootstrap] pip cache : ${PIP_NO_CACHE_DIR}"
 echo "[bootstrap] mode      : ${PLAYGROUND_INSTALL_MODE}"
@@ -275,7 +277,7 @@ else
     "lxml" \
     "mediapy" \
     "ml_collections" \
-    "orbax-checkpoint>=0.11.22" \
+    "orbax-checkpoint==${ORBAX_VERSION}" \
     "tensorboardX" \
     "tqdm"
 
