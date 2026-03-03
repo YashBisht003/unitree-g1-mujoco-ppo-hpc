@@ -124,6 +124,7 @@ Bootstrap git operations now set explicit temporary git identity and can disable
 Bootstrap now uses `${ROOT_DIR}/.venv/bin/python -m pip` explicitly for all installs to avoid mixed conda/venv writes.
 Bootstrap runs pip in no-bytecode mode (`python -B -m pip` with `PIP_NO_COMPILE=1`) to avoid read-only stdlib write failures on shared HPC setups.
 Bootstrap generates a constraints file to prevent transitive upgrades from overwriting pinned `jax/jaxlib/flax/orbax` versions.
+For legacy JAX (<0.5) bootstrap auto-pins `numpy==1.26.4` to avoid NumPy-2 ABI breakage in older `jaxlib` wheels.
 If the pinned menagerie commit is missing upstream, bootstrap now warns and continues with current menagerie `HEAD` instead of aborting.
 
 By default, `bootstrap_env.sh` checks out MuJoCo Playground commit `d886c80` for reproducibility and MuJoCo `3.3.4` compatibility (avoids the `Element 'contact'` schema error). Override with `PLAYGROUND_REF=main` if you want latest.

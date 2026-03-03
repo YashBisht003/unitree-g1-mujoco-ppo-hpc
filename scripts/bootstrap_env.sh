@@ -21,6 +21,7 @@ JAX_CUDA11_WHEELS_URL="${JAX_CUDA11_WHEELS_URL:-https://storage.googleapis.com/j
 BRAX_VERSION="${BRAX_VERSION:-0.12.5}"
 FLAX_VERSION="${FLAX_VERSION:-0.10.6}"
 ORBAX_VERSION="${ORBAX_VERSION:-0.11.22}"
+NUMPY_VERSION="${NUMPY_VERSION:-}"
 REQUIRE_CXX17="${REQUIRE_CXX17:-0}"
 PIP_NO_CACHE_DIR="${PIP_NO_CACHE_DIR:-1}"
 PLAYGROUND_INSTALL_MODE="${PLAYGROUND_INSTALL_MODE:-no_warp}"
@@ -143,6 +144,7 @@ echo "[bootstrap] cuda11 whl: ${JAX_CUDA11_WHEELS_URL}"
 echo "[bootstrap] brax      : ${BRAX_VERSION}"
 echo "[bootstrap] flax      : ${FLAX_VERSION}"
 echo "[bootstrap] orbax     : ${ORBAX_VERSION}"
+echo "[bootstrap] numpy pin : ${NUMPY_VERSION:-<auto>}"
 echo "[bootstrap] cxx17 req : ${REQUIRE_CXX17}"
 echo "[bootstrap] pip cache : ${PIP_NO_CACHE_DIR}"
 echo "[bootstrap] mode      : ${PLAYGROUND_INSTALL_MODE}"
@@ -263,6 +265,36 @@ if jax_v < (0, 5, 1) and flax_v >= (0, 10, 6):
   raise SystemExit(1)
 PY
 
+# Legacy jaxlib wheels (e.g., 0.4.x cuda11) are built against NumPy 1.x.
+if [ -z "${NUMPY_VERSION}" ]; then
+  NUMPY_VERSION="$("${VENV_PY}" -B - "${JAX_VERSION}" <<'PY'
+import sys
+def parse(v):
+  parts = []
+  for token in v.split("."):
+    digits = "".join(ch for ch in token if ch.isdigit())
+    parts.append(int(digits) if digits else 0)
+  while len(parts) < 3:
+    parts.append(0)
+  return tuple(parts[:3])
+print("1.26.4" if parse(sys.argv[1]) < (0, 5, 0) else "")
+PY
+)"
+fi
+echo "[bootstrap] numpy     : ${NUMPY_VERSION:-<none>}"
+
+CONSTRAINTS_FILE="${VENV_DIR}/pip_constraints.txt"
+cat > "${CONSTRAINTS_FILE}" <<EOF
+jax==${JAX_VERSION}
+jaxlib==${JAXLIB_VERSION}
+flax==${FLAX_VERSION}
+orbax-checkpoint==${ORBAX_VERSION}
+EOF
+if [ -n "${NUMPY_VERSION}" ]; then
+  echo "numpy==${NUMPY_VERSION}" >> "${CONSTRAINTS_FILE}"
+fi
+echo "[bootstrap] constraints: ${CONSTRAINTS_FILE}"
+
 "${VENV_PY}" -B -m pip install "${PIP_FLAGS[@]}" --upgrade pip setuptools wheel
 
 if [ ! -d "${PLAYGROUND_DIR}/.git" ]; then
@@ -273,30 +305,24 @@ git_in_repo "${PLAYGROUND_DIR}" fetch --all --tags
 git_in_repo "${PLAYGROUND_DIR}" checkout "${PLAYGROUND_REF}"
 apply_mjx_make_data_compat_shim
 
-"${VENV_PY}" -B -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes "ml_dtypes==${ML_DTYPES_VERSION}"
+if [ -n "${NUMPY_VERSION}" ]; then
+  "${VENV_PY}" -B -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary -c "${CONSTRAINTS_FILE}" "numpy==${NUMPY_VERSION}"
+fi
+"${VENV_PY}" -B -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes -c "${CONSTRAINTS_FILE}" "ml_dtypes==${ML_DTYPES_VERSION}"
 
 if [ "${USE_CUDA}" = "1" ]; then
   if [ "${JAX_CUDA_EXTRA}" = "cuda11_pip" ]; then
-    "${VENV_PY}" -B -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes \
+    "${VENV_PY}" -B -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes -c "${CONSTRAINTS_FILE}" \
       --find-links "${JAX_CUDA11_WHEELS_URL}" \
       "jax[${JAX_CUDA_EXTRA}]==${JAX_VERSION}" "jax==${JAX_VERSION}" "ml_dtypes==${ML_DTYPES_VERSION}"
   else
-    "${VENV_PY}" -B -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes \
+    "${VENV_PY}" -B -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes -c "${CONSTRAINTS_FILE}" \
       "jax[${JAX_CUDA_EXTRA}]==${JAX_VERSION}" "jax==${JAX_VERSION}" "jaxlib==${JAXLIB_VERSION}" "ml_dtypes==${ML_DTYPES_VERSION}"
   fi
 else
-  "${VENV_PY}" -B -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes \
+  "${VENV_PY}" -B -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes -c "${CONSTRAINTS_FILE}" \
     "jax==${JAX_VERSION}" "jaxlib==${JAXLIB_VERSION}" "ml_dtypes==${ML_DTYPES_VERSION}"
 fi
-
-CONSTRAINTS_FILE="${VENV_DIR}/pip_constraints.txt"
-cat > "${CONSTRAINTS_FILE}" <<EOF
-jax==${JAX_VERSION}
-jaxlib==${JAXLIB_VERSION}
-flax==${FLAX_VERSION}
-orbax-checkpoint==${ORBAX_VERSION}
-EOF
-echo "[bootstrap] constraints: ${CONSTRAINTS_FILE}"
 
 if [ "${PLAYGROUND_INSTALL_MODE}" = "full" ]; then
   "${VENV_PY}" -B -m pip install \
