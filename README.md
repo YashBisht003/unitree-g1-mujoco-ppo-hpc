@@ -106,6 +106,7 @@ If your partition name differs (`gpu`, `hip-gpu`, etc.), use `PARTITION=<name> b
 Memory is not hardcoded now; it uses scheduler defaults unless you pass `MEM=...`.
 Submit scripts default to `BOOTSTRAP_OFFLINE=1` (no internet required on compute nodes). Do one-time setup first on login node with `BOOTSTRAP_OFFLINE=0 bash scripts/bootstrap_env.sh`.
 For older login nodes (e.g., GCC 4.8), bootstrap pins `ml_dtypes` to binary wheel (`0.5.1`) to avoid C++17 source builds.
+Bootstrap defaults to `PIP_NO_CACHE_DIR=1` to reduce disk usage under quota limits.
 
 By default, `bootstrap_env.sh` checks out MuJoCo Playground commit `f2159f3` for reproducibility. Override with `PLAYGROUND_REF=main` if you want latest.
 

@@ -11,6 +11,7 @@ USE_CUDA="${USE_CUDA:-1}"
 BOOTSTRAP_OFFLINE="${BOOTSTRAP_OFFLINE:-0}"
 ML_DTYPES_VERSION="${ML_DTYPES_VERSION:-0.5.1}"
 REQUIRE_CXX17="${REQUIRE_CXX17:-0}"
+PIP_NO_CACHE_DIR="${PIP_NO_CACHE_DIR:-1}"
 
 # Some HPC images ship very old git versions without "-C".
 if git -C "${ROOT_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -45,6 +46,7 @@ echo "[bootstrap] use_cuda  : ${USE_CUDA}"
 echo "[bootstrap] offline   : ${BOOTSTRAP_OFFLINE}"
 echo "[bootstrap] ml_dtypes : ${ML_DTYPES_VERSION}"
 echo "[bootstrap] cxx17 req : ${REQUIRE_CXX17}"
+echo "[bootstrap] pip cache : ${PIP_NO_CACHE_DIR}"
 
 if command -v g++ >/dev/null 2>&1; then
   echo "[bootstrap] g++       : $(command -v g++)"
@@ -62,6 +64,13 @@ if [ "${BOOTSTRAP_OFFLINE}" = "1" ]; then
   python -c "import mujoco_playground; print('offline bootstrap ok')" >/dev/null
   echo "[bootstrap] offline validation passed"
   exit 0
+fi
+
+# Keep installs quota-friendly on shared HPC filesystems.
+export PIP_DISABLE_PIP_VERSION_CHECK=1
+PIP_FLAGS=()
+if [ "${PIP_NO_CACHE_DIR}" = "1" ]; then
+  PIP_FLAGS+=(--no-cache-dir)
 fi
 
 # Some dependencies may require C++17 if pip falls back to source builds.
@@ -86,7 +95,7 @@ fi
 
 source "${VENV_DIR}/bin/activate"
 
-python -m pip install --upgrade pip setuptools wheel
+python -m pip install "${PIP_FLAGS[@]}" --upgrade pip setuptools wheel
 
 if [ ! -d "${PLAYGROUND_DIR}/.git" ]; then
   git clone https://github.com/google-deepmind/mujoco_playground.git "${PLAYGROUND_DIR}"
@@ -95,15 +104,16 @@ fi
 git_in_repo "${PLAYGROUND_DIR}" fetch --all --tags
 git_in_repo "${PLAYGROUND_DIR}" checkout "${PLAYGROUND_REF}"
 
-python -m pip install --upgrade --prefer-binary --only-binary=ml_dtypes "ml_dtypes==${ML_DTYPES_VERSION}"
+python -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes "ml_dtypes==${ML_DTYPES_VERSION}"
 
 if [ "${USE_CUDA}" = "1" ]; then
-  python -m pip install --upgrade --prefer-binary --only-binary=ml_dtypes "jax[cuda12]" "ml_dtypes==${ML_DTYPES_VERSION}"
+  python -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes "jax[cuda12]" "ml_dtypes==${ML_DTYPES_VERSION}"
 else
-  python -m pip install --upgrade --prefer-binary --only-binary=ml_dtypes jax "ml_dtypes==${ML_DTYPES_VERSION}"
+  python -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes jax "ml_dtypes==${ML_DTYPES_VERSION}"
 fi
 
 python -m pip install \
+  "${PIP_FLAGS[@]}" \
   --prefer-binary \
   --only-binary=ml_dtypes \
   --extra-index-url https://py.mujoco.org \
