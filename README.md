@@ -23,6 +23,8 @@ Paper setup reports very large scale (`32768` envs) and long horizon (`400M`) fo
 - `scripts/train_g1_rough_from_flat.sh`: stage-2 rough-terrain finetuning from flat checkpoint.
 - `slurm/g1_flat_gpu.sbatch`: Param Ganga style GPU job for flat stage.
 - `slurm/g1_rough_gpu.sbatch`: Param Ganga style GPU job for rough stage.
+- `slurm/g1_flat_cpu.sbatch`: CPU-only job for flat stage (for old NVIDIA driver clusters).
+- `slurm/g1_rough_cpu.sbatch`: CPU-only job for rough stage.
 
 ## Quick start (on HPC login node)
 
@@ -115,6 +117,8 @@ Bootstrap also installs an MJX `make_data` compatibility shim in MuJoCo Playgrou
 Bootstrap/training set `PYTHONDONTWRITEBYTECODE=1` and `PYTHONPYCACHEPREFIX=.venv/.pycache` to avoid writing bytecode into external conda/system stdlib paths.
 Bootstrap now pre-downloads `mujoco_menagerie` on login node using git-compatible clone/checkout logic (works on old git without `-C`), and offline mode validates that assets are present before submit.
 If your GPU nodes report `cudaErrorInsufficientDriver`, submit with `USE_CUDA=0` to force JAX CPU backend (`JAX_PLATFORMS=cpu`) while keeping the same training pipeline. Slurm scripts also auto-fallback to CPU when `nvidia-smi` shows driver major `< 525` or is unavailable on the node.
+When `USE_CUDA=0`, submit wrappers choose CPU sbatch files (`slurm/g1_flat_cpu.sbatch` / `slurm/g1_rough_cpu.sbatch`) and do not request GPU resources.
+If your cluster uses a non-`cpu` partition name for CPU-only jobs, pass it explicitly, e.g. `USE_CUDA=0 PARTITION=<name> bash scripts/submit_flat.sh`.
 
 By default, `bootstrap_env.sh` checks out MuJoCo Playground commit `d886c80` for reproducibility and MuJoCo `3.3.4` compatibility (avoids the `Element 'contact'` schema error). Override with `PLAYGROUND_REF=main` if you want latest.
 

@@ -2,19 +2,26 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SBATCH_SCRIPT="${ROOT_DIR}/slurm/g1_flat_gpu.sbatch"
 
 if ! command -v sbatch >/dev/null 2>&1; then
   echo "ERROR: sbatch not found. Run this on the HPC login node."
   exit 1
 fi
 
-PARTITION="${PARTITION:-gpu}"
-GPUS="${GPUS:-1}"
-CPUS_PER_TASK="${CPUS_PER_TASK:-16}"
+USE_CUDA="${USE_CUDA:-1}"
+if [ "${USE_CUDA}" = "1" ]; then
+  SBATCH_SCRIPT="${ROOT_DIR}/slurm/g1_flat_gpu.sbatch"
+  PARTITION="${PARTITION:-gpu}"
+  GPUS="${GPUS:-1}"
+  CPUS_PER_TASK="${CPUS_PER_TASK:-16}"
+else
+  SBATCH_SCRIPT="${ROOT_DIR}/slurm/g1_flat_cpu.sbatch"
+  PARTITION="${PARTITION:-cpu}"
+  GPUS=0
+  CPUS_PER_TASK="${CPUS_PER_TASK:-32}"
+fi
 MEM="${MEM:-}"
 TIME_LIMIT="${TIME_LIMIT:-24:00:00}"
-USE_CUDA="${USE_CUDA:-1}"
 
 EXPORT_VARS=(
   "ALL"
@@ -39,12 +46,15 @@ mkdir -p "${ROOT_DIR}/logs"
 
 SBATCH_ARGS=(
   "--partition=${PARTITION}"
-  "--gres=gpu:${GPUS}"
   "--cpus-per-task=${CPUS_PER_TASK}"
   "--time=${TIME_LIMIT}"
   "--chdir=${ROOT_DIR}"
   "--export=$(IFS=,; echo "${EXPORT_VARS[*]}")"
 )
+
+if [ "${USE_CUDA}" = "1" ]; then
+  SBATCH_ARGS+=("--gres=gpu:${GPUS}")
+fi
 
 if [ -n "${MEM}" ]; then
   SBATCH_ARGS+=("--mem=${MEM}")
