@@ -1,0 +1,6 @@
+.venv/
+mujoco_playground/
+logs/
+*.mp4
+*.zip
+__pycache__/
