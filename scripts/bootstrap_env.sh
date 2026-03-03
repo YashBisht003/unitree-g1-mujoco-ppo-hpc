@@ -288,9 +288,19 @@ else
     "jax==${JAX_VERSION}" "jaxlib==${JAXLIB_VERSION}" "ml_dtypes==${ML_DTYPES_VERSION}"
 fi
 
+CONSTRAINTS_FILE="${VENV_DIR}/pip_constraints.txt"
+cat > "${CONSTRAINTS_FILE}" <<EOF
+jax==${JAX_VERSION}
+jaxlib==${JAXLIB_VERSION}
+flax==${FLAX_VERSION}
+orbax-checkpoint==${ORBAX_VERSION}
+EOF
+echo "[bootstrap] constraints: ${CONSTRAINTS_FILE}"
+
 if [ "${PLAYGROUND_INSTALL_MODE}" = "full" ]; then
   "${VENV_PY}" -m pip install \
     "${PIP_FLAGS[@]}" \
+    -c "${CONSTRAINTS_FILE}" \
     --prefer-binary \
     --only-binary=ml_dtypes \
     --extra-index-url https://py.mujoco.org \
@@ -301,6 +311,7 @@ else
   # This path installs a JAX-only stack for train_jax_ppo.py.
   "${VENV_PY}" -m pip install \
     "${PIP_FLAGS[@]}" \
+    -c "${CONSTRAINTS_FILE}" \
     --prefer-binary \
     --only-binary=ml_dtypes \
     --extra-index-url https://py.mujoco.org \
@@ -309,6 +320,7 @@ else
 
   "${VENV_PY}" -m pip install \
     "${PIP_FLAGS[@]}" \
+    -c "${CONSTRAINTS_FILE}" \
     --prefer-binary \
     "absl-py" \
     "brax==${BRAX_VERSION}" \
@@ -383,7 +395,14 @@ if [ ! -d "${MENAGERIE_DIR}/.git" ]; then
   git "${GIT_ARGS[@]}" clone --depth 1 "${MENAGERIE_URL}" "${MENAGERIE_DIR}"
 fi
 git_in_repo "${MENAGERIE_DIR}" fetch --all --tags || true
-git_in_repo "${MENAGERIE_DIR}" checkout "${MENAGERIE_COMMIT}"
+if ! git_in_repo "${MENAGERIE_DIR}" checkout "${MENAGERIE_COMMIT}"; then
+  echo "[bootstrap] warning: menagerie commit ${MENAGERIE_COMMIT} not available in current clone."
+  echo "[bootstrap] warning: attempting targeted fetch for that commit."
+  git_in_repo "${MENAGERIE_DIR}" fetch origin "${MENAGERIE_COMMIT}" || true
+  if ! git_in_repo "${MENAGERIE_DIR}" checkout "${MENAGERIE_COMMIT}"; then
+    echo "[bootstrap] warning: unable to checkout ${MENAGERIE_COMMIT}; keeping current menagerie HEAD."
+  fi
+fi
 echo "[bootstrap] menagerie ready at ${MENAGERIE_DIR}"
 
 echo "[bootstrap] done"

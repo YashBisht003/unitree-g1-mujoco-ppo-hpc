@@ -122,6 +122,8 @@ If your cluster uses a non-`cpu` partition name for CPU-only jobs, pass it expli
 Bootstrap now fails fast for incompatible pin sets (example: `JAX_VERSION<0.5.1` with `FLAX_VERSION>=0.10.6`).
 Bootstrap git operations now set explicit temporary git identity and can disable reflogs to avoid HPC errors like `unable to look up current user in the passwd file`.
 Bootstrap now uses `${ROOT_DIR}/.venv/bin/python -m pip` explicitly for all installs to avoid mixed conda/venv writes.
+Bootstrap generates a constraints file to prevent transitive upgrades from overwriting pinned `jax/jaxlib/flax/orbax` versions.
+If the pinned menagerie commit is missing upstream, bootstrap now warns and continues with current menagerie `HEAD` instead of aborting.
 
 By default, `bootstrap_env.sh` checks out MuJoCo Playground commit `d886c80` for reproducibility and MuJoCo `3.3.4` compatibility (avoids the `Element 'contact'` schema error). Override with `PLAYGROUND_REF=main` if you want latest.
 
