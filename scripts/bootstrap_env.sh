@@ -9,6 +9,8 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 PLAYGROUND_REF="${PLAYGROUND_REF:-f2159f3}"
 USE_CUDA="${USE_CUDA:-1}"
 BOOTSTRAP_OFFLINE="${BOOTSTRAP_OFFLINE:-0}"
+ML_DTYPES_VERSION="${ML_DTYPES_VERSION:-0.5.1}"
+REQUIRE_CXX17="${REQUIRE_CXX17:-0}"
 
 # Some HPC images ship very old git versions without "-C".
 if git -C "${ROOT_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -41,6 +43,8 @@ echo "[bootstrap] venv      : ${VENV_DIR}"
 echo "[bootstrap] ref       : ${PLAYGROUND_REF}"
 echo "[bootstrap] use_cuda  : ${USE_CUDA}"
 echo "[bootstrap] offline   : ${BOOTSTRAP_OFFLINE}"
+echo "[bootstrap] ml_dtypes : ${ML_DTYPES_VERSION}"
+echo "[bootstrap] cxx17 req : ${REQUIRE_CXX17}"
 
 if command -v g++ >/dev/null 2>&1; then
   echo "[bootstrap] g++       : $(command -v g++)"
@@ -60,17 +64,20 @@ if [ "${BOOTSTRAP_OFFLINE}" = "1" ]; then
   exit 0
 fi
 
-# Some dependencies (e.g. ml_dtypes fallback build) require C++17 support.
+# Some dependencies may require C++17 if pip falls back to source builds.
 if command -v g++ >/dev/null 2>&1; then
   if ! echo "int main(){return 0;}" | g++ -std=c++17 -x c++ - -o /tmp/cxx17_test_$$ >/dev/null 2>&1; then
-    echo "ERROR: g++ does not support -std=c++17 on this login node."
-    echo "Load a newer compiler module and retry, for example:"
-    echo "  module load compiler/gcc/7.3.0"
-    echo "Then re-run:"
-    echo "  BOOTSTRAP_OFFLINE=0 bash scripts/bootstrap_env.sh"
-    exit 1
+    if [ "${REQUIRE_CXX17}" = "1" ]; then
+      echo "ERROR: g++ does not support -std=c++17 on this login node."
+      echo "Load a newer compiler module and retry."
+      exit 1
+    else
+      echo "[bootstrap] warning: g++ lacks C++17. Using binary-wheel path only."
+      echo "[bootstrap] warning: if install later falls back to source builds, load newer GCC and retry."
+    fi
+  else
+    rm -f /tmp/cxx17_test_$$ || true
   fi
-  rm -f /tmp/cxx17_test_$$ || true
 fi
 
 if [ ! -d "${VENV_DIR}" ]; then
@@ -88,13 +95,17 @@ fi
 git_in_repo "${PLAYGROUND_DIR}" fetch --all --tags
 git_in_repo "${PLAYGROUND_DIR}" checkout "${PLAYGROUND_REF}"
 
+python -m pip install --upgrade --prefer-binary --only-binary=ml_dtypes "ml_dtypes==${ML_DTYPES_VERSION}"
+
 if [ "${USE_CUDA}" = "1" ]; then
-  python -m pip install --upgrade "jax[cuda12]"
+  python -m pip install --upgrade --prefer-binary --only-binary=ml_dtypes "jax[cuda12]" "ml_dtypes==${ML_DTYPES_VERSION}"
 else
-  python -m pip install --upgrade jax
+  python -m pip install --upgrade --prefer-binary --only-binary=ml_dtypes jax "ml_dtypes==${ML_DTYPES_VERSION}"
 fi
 
 python -m pip install \
+  --prefer-binary \
+  --only-binary=ml_dtypes \
   --extra-index-url https://py.mujoco.org \
   --extra-index-url https://pypi.nvidia.com \
   -e "${PLAYGROUND_DIR}[learning]"
