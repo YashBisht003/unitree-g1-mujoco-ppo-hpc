@@ -10,6 +10,9 @@ PLAYGROUND_REF="${PLAYGROUND_REF:-f2159f3}"
 USE_CUDA="${USE_CUDA:-1}"
 BOOTSTRAP_OFFLINE="${BOOTSTRAP_OFFLINE:-0}"
 ML_DTYPES_VERSION="${ML_DTYPES_VERSION:-0.5.1}"
+JAX_VERSION="${JAX_VERSION:-0.5.3}"
+BRAX_VERSION="${BRAX_VERSION:-0.12.5}"
+FLAX_VERSION="${FLAX_VERSION:-0.10.6}"
 REQUIRE_CXX17="${REQUIRE_CXX17:-0}"
 PIP_NO_CACHE_DIR="${PIP_NO_CACHE_DIR:-1}"
 PLAYGROUND_INSTALL_MODE="${PLAYGROUND_INSTALL_MODE:-no_warp}"
@@ -49,6 +52,9 @@ echo "[bootstrap] ref       : ${PLAYGROUND_REF}"
 echo "[bootstrap] use_cuda  : ${USE_CUDA}"
 echo "[bootstrap] offline   : ${BOOTSTRAP_OFFLINE}"
 echo "[bootstrap] ml_dtypes : ${ML_DTYPES_VERSION}"
+echo "[bootstrap] jax       : ${JAX_VERSION}"
+echo "[bootstrap] brax      : ${BRAX_VERSION}"
+echo "[bootstrap] flax      : ${FLAX_VERSION}"
 echo "[bootstrap] cxx17 req : ${REQUIRE_CXX17}"
 echo "[bootstrap] pip cache : ${PIP_NO_CACHE_DIR}"
 echo "[bootstrap] mode      : ${PLAYGROUND_INSTALL_MODE}"
@@ -115,9 +121,11 @@ git_in_repo "${PLAYGROUND_DIR}" checkout "${PLAYGROUND_REF}"
 python -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes "ml_dtypes==${ML_DTYPES_VERSION}"
 
 if [ "${USE_CUDA}" = "1" ]; then
-  python -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes "jax[cuda12]" "ml_dtypes==${ML_DTYPES_VERSION}"
+  python -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes \
+    "jax[cuda12]==${JAX_VERSION}" "jax==${JAX_VERSION}" "jaxlib==${JAX_VERSION}" "ml_dtypes==${ML_DTYPES_VERSION}"
 else
-  python -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes jax "ml_dtypes==${ML_DTYPES_VERSION}"
+  python -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary --only-binary=ml_dtypes \
+    "jax==${JAX_VERSION}" "jaxlib==${JAX_VERSION}" "ml_dtypes==${ML_DTYPES_VERSION}"
 fi
 
 if [ "${PLAYGROUND_INSTALL_MODE}" = "full" ]; then
@@ -142,10 +150,12 @@ else
   python -m pip install \
     "${PIP_FLAGS[@]}" \
     --prefer-binary \
+    "jax==${JAX_VERSION}" \
+    "jaxlib==${JAX_VERSION}" \
     "absl-py" \
-    "brax>=0.12.5" \
+    "brax==${BRAX_VERSION}" \
     "etils" \
-    "flax" \
+    "flax==${FLAX_VERSION}" \
     "lxml" \
     "mediapy" \
     "ml_collections" \

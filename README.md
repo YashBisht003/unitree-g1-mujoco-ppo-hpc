@@ -108,6 +108,7 @@ Submit scripts default to `BOOTSTRAP_OFFLINE=1` (no internet required on compute
 For older login nodes (e.g., GCC 4.8), bootstrap pins `ml_dtypes` to binary wheel (`0.5.1`) to avoid C++17 source builds.
 Bootstrap defaults to `PIP_NO_CACHE_DIR=1` to reduce disk usage under quota limits.
 Bootstrap defaults to `PLAYGROUND_INSTALL_MODE=no_warp`, which skips `warp-lang` and installs a JAX-only stack compatible with older HPC nodes.
+Bootstrap also pins `jax/jaxlib` and `flax` to compatible versions to avoid plugin/version drift.
 
 By default, `bootstrap_env.sh` checks out MuJoCo Playground commit `f2159f3` for reproducibility. Override with `PLAYGROUND_REF=main` if you want latest.
 
