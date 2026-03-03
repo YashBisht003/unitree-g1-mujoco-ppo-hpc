@@ -42,6 +42,11 @@ echo "[bootstrap] ref       : ${PLAYGROUND_REF}"
 echo "[bootstrap] use_cuda  : ${USE_CUDA}"
 echo "[bootstrap] offline   : ${BOOTSTRAP_OFFLINE}"
 
+if command -v g++ >/dev/null 2>&1; then
+  echo "[bootstrap] g++       : $(command -v g++)"
+  echo "[bootstrap] g++ ver   : $(g++ --version | head -n 1)"
+fi
+
 if [ "${BOOTSTRAP_OFFLINE}" = "1" ]; then
   if [ ! -d "${VENV_DIR}" ] || [ ! -d "${PLAYGROUND_DIR}" ]; then
     echo "ERROR: offline bootstrap requested but setup is incomplete."
@@ -53,6 +58,19 @@ if [ "${BOOTSTRAP_OFFLINE}" = "1" ]; then
   python -c "import mujoco_playground; print('offline bootstrap ok')" >/dev/null
   echo "[bootstrap] offline validation passed"
   exit 0
+fi
+
+# Some dependencies (e.g. ml_dtypes fallback build) require C++17 support.
+if command -v g++ >/dev/null 2>&1; then
+  if ! echo "int main(){return 0;}" | g++ -std=c++17 -x c++ - -o /tmp/cxx17_test_$$ >/dev/null 2>&1; then
+    echo "ERROR: g++ does not support -std=c++17 on this login node."
+    echo "Load a newer compiler module and retry, for example:"
+    echo "  module load compiler/gcc/7.3.0"
+    echo "Then re-run:"
+    echo "  BOOTSTRAP_OFFLINE=0 bash scripts/bootstrap_env.sh"
+    exit 1
+  fi
+  rm -f /tmp/cxx17_test_$$ || true
 fi
 
 if [ ! -d "${VENV_DIR}" ]; then
