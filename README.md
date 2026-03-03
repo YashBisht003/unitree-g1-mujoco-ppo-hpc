@@ -127,6 +127,7 @@ Bootstrap generates a constraints file to prevent transitive upgrades from overw
 For legacy JAX (<0.5) bootstrap auto-pins `numpy==1.26.4` to avoid NumPy-2 ABI breakage in older `jaxlib` wheels.
 For `JAX_CUDA_EXTRA=cuda11_pip`, bootstrap also constrains `nvidia-cudnn-cu11<9` (JAX 0.4.x cuda11 wheels are linked against cuDNN 8.x).
 Training/smoke scripts auto-prepend `.venv` NVIDIA library paths to `LD_LIBRARY_PATH`, which fixes runtime errors like `Unable to load cuDNN` on older HPC stacks.
+Training scripts default `JAX_DEFAULT_MATMUL_PRECISION=float32` for compatibility with legacy `jax==0.4.x` stacks.
 If the pinned menagerie commit is missing upstream, bootstrap now warns and continues with current menagerie `HEAD` instead of aborting.
 
 By default, `bootstrap_env.sh` checks out MuJoCo Playground commit `d886c80` for reproducibility and MuJoCo `3.3.4` compatibility (avoids the `Element 'contact'` schema error). Override with `PLAYGROUND_REF=main` if you want latest.
