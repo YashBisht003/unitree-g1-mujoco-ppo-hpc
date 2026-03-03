@@ -106,6 +106,7 @@ fi
 
 # Keep installs quota-friendly on shared HPC filesystems.
 export PIP_DISABLE_PIP_VERSION_CHECK=1
+export PYTHONDONTWRITEBYTECODE=1
 PIP_FLAGS=()
 if [ "${PIP_NO_CACHE_DIR}" = "1" ]; then
   PIP_FLAGS+=(--no-cache-dir)
@@ -132,6 +133,7 @@ if [ ! -d "${VENV_DIR}" ]; then
 fi
 
 source "${VENV_DIR}/bin/activate"
+export PYTHONPYCACHEPREFIX="${VENV_DIR}/.pycache"
 
 python -m pip install "${PIP_FLAGS[@]}" --upgrade pip setuptools wheel
 
