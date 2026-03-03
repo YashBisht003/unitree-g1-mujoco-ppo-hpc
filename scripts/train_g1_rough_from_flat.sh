@@ -28,6 +28,20 @@ unset CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_PROMPT_MODIFIER CONDA_EXE CONDA_PYTHO
 source "${VENV_DIR}/bin/activate"
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONPYCACHEPREFIX="${VENV_DIR}/.pycache"
+if [ "${USE_CUDA:-1}" = "1" ]; then
+  VENV_SITE="$("${VENV_DIR}/bin/python" -B - <<'PY'
+import sysconfig
+print(sysconfig.get_paths()["purelib"])
+PY
+)"
+  if [ -d "${VENV_SITE}/nvidia" ]; then
+    CUDA_LIB_DIRS="$(find "${VENV_SITE}/nvidia" -maxdepth 3 -type d -name lib 2>/dev/null | tr '\n' ':')"
+    if [ -n "${CUDA_LIB_DIRS}" ]; then
+      export LD_LIBRARY_PATH="${CUDA_LIB_DIRS%:}:${LD_LIBRARY_PATH:-}"
+      echo "[train-rough] added CUDA libs from ${VENV_SITE}/nvidia to LD_LIBRARY_PATH"
+    fi
+  fi
+fi
 cd "${PLAYGROUND_DIR}"
 
 NUM_TIMESTEPS="${NUM_TIMESTEPS:-100000000}"

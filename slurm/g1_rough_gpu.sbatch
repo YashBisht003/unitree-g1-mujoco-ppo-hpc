@@ -31,16 +31,24 @@ fi
 
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-16}"
 export USE_CUDA="${USE_CUDA:-1}"
+export JAX_CUDA_EXTRA="${JAX_CUDA_EXTRA:-cuda12}"
 
-# CUDA12 JAX requires a sufficiently new NVIDIA driver (major >= 525).
-# Auto-fallback to CPU on older driver stacks to avoid hard crashes.
+# Driver guardrails:
+# - cuda12 wheels typically require major >= 525.
+# - for cuda11_pip we skip hard gating and let JAX initialize directly.
 if [ "${USE_CUDA}" = "1" ]; then
   if command -v nvidia-smi >/dev/null 2>&1; then
     DRIVER_VERSION="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n 1 | tr -d '[:space:]')"
     DRIVER_MAJOR="${DRIVER_VERSION%%.*}"
-    if echo "${DRIVER_MAJOR}" | grep -Eq '^[0-9]+$' && [ "${DRIVER_MAJOR}" -lt 525 ]; then
-      echo "[slurm] CUDA driver ${DRIVER_VERSION} too old for jax[cuda12]; forcing CPU backend."
+    MIN_DRIVER_MAJOR=525
+    if [ "${JAX_CUDA_EXTRA}" = "cuda11_pip" ]; then
+      MIN_DRIVER_MAJOR=0
+    fi
+    if [ "${MIN_DRIVER_MAJOR}" -gt 0 ] && echo "${DRIVER_MAJOR}" | grep -Eq '^[0-9]+$' && [ "${DRIVER_MAJOR}" -lt "${MIN_DRIVER_MAJOR}" ]; then
+      echo "[slurm] CUDA driver ${DRIVER_VERSION} too old for jax[${JAX_CUDA_EXTRA}] (need >=${MIN_DRIVER_MAJOR}); forcing CPU backend."
       export USE_CUDA=0
+    else
+      echo "[slurm] CUDA driver ${DRIVER_VERSION} accepted for jax[${JAX_CUDA_EXTRA}]."
     fi
   else
     echo "[slurm] nvidia-smi not found on node; forcing CPU backend."

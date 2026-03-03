@@ -293,6 +293,10 @@ EOF
 if [ -n "${NUMPY_VERSION}" ]; then
   echo "numpy==${NUMPY_VERSION}" >> "${CONSTRAINTS_FILE}"
 fi
+if [ "${USE_CUDA}" = "1" ] && [ "${JAX_CUDA_EXTRA}" = "cuda11_pip" ]; then
+  # jaxlib 0.4.25+cuda11.cudnn86 is linked against cuDNN 8.x.
+  echo "nvidia-cudnn-cu11<9" >> "${CONSTRAINTS_FILE}"
+fi
 echo "[bootstrap] constraints: ${CONSTRAINTS_FILE}"
 
 "${VENV_PY}" -B -m pip install "${PIP_FLAGS[@]}" --upgrade pip setuptools wheel

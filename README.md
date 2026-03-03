@@ -125,9 +125,13 @@ Bootstrap now uses `${ROOT_DIR}/.venv/bin/python -m pip` explicitly for all inst
 Bootstrap runs pip in no-bytecode mode (`python -B -m pip` with `PIP_NO_COMPILE=1`) to avoid read-only stdlib write failures on shared HPC setups.
 Bootstrap generates a constraints file to prevent transitive upgrades from overwriting pinned `jax/jaxlib/flax/orbax` versions.
 For legacy JAX (<0.5) bootstrap auto-pins `numpy==1.26.4` to avoid NumPy-2 ABI breakage in older `jaxlib` wheels.
+For `JAX_CUDA_EXTRA=cuda11_pip`, bootstrap also constrains `nvidia-cudnn-cu11<9` (JAX 0.4.x cuda11 wheels are linked against cuDNN 8.x).
+Training/smoke scripts auto-prepend `.venv` NVIDIA library paths to `LD_LIBRARY_PATH`, which fixes runtime errors like `Unable to load cuDNN` on older HPC stacks.
 If the pinned menagerie commit is missing upstream, bootstrap now warns and continues with current menagerie `HEAD` instead of aborting.
 
 By default, `bootstrap_env.sh` checks out MuJoCo Playground commit `d886c80` for reproducibility and MuJoCo `3.3.4` compatibility (avoids the `Element 'contact'` schema error). Override with `PLAYGROUND_REF=main` if you want latest.
+For V100 + driver `510.xx` clusters, use the legacy CUDA11 stack:
+`USE_CUDA=1 JAX_CUDA_EXTRA=cuda11_pip JAX_VERSION=0.4.25 FLAX_VERSION=0.8.4 ORBAX_VERSION=0.5.18 PLAYGROUND_INSTALL_MODE=no_warp BOOTSTRAP_OFFLINE=0 bash scripts/bootstrap_env.sh`
 
 ## Source references
 

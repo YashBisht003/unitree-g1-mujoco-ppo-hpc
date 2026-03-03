@@ -30,6 +30,7 @@ EXPORT_VARS=(
   "NUM_TIMESTEPS=${NUM_TIMESTEPS:-200000000}"
   "SEED=${SEED:-1}"
   "USE_CUDA=${USE_CUDA}"
+  "JAX_CUDA_EXTRA=${JAX_CUDA_EXTRA:-cuda12}"
   "BOOTSTRAP_OFFLINE=${BOOTSTRAP_OFFLINE:-1}"
   "PLAYGROUND_REF=${PLAYGROUND_REF:-d886c80}"
   "PYTHON_BIN=${PYTHON_BIN:-python3}"
@@ -38,7 +39,7 @@ EXPORT_VARS=(
 )
 
 MEM_PRINT="${MEM:-<cluster-default>}"
-echo "[submit-flat] partition=${PARTITION} gpus=${GPUS} cpus=${CPUS_PER_TASK} mem=${MEM_PRINT} time=${TIME_LIMIT} use_cuda=${USE_CUDA}"
+echo "[submit-flat] partition=${PARTITION} gpus=${GPUS} cpus=${CPUS_PER_TASK} mem=${MEM_PRINT} time=${TIME_LIMIT} use_cuda=${USE_CUDA} jax_extra=${JAX_CUDA_EXTRA:-cuda12}"
 echo "[submit-flat] script=${SBATCH_SCRIPT}"
 
 # Ensure stdout/stderr target directory exists before Slurm opens log files.
