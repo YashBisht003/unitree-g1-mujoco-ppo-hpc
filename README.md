@@ -49,6 +49,8 @@ export FLAT_CKPT=/absolute/path/to/mujoco_playground/logs/<flat_run>/checkpoints
 bash scripts/train_g1_rough_from_flat.sh
 ```
 
+`FLAT_CKPT` can be either a checkpoints root directory or a leaf step directory; wrapper logic handles both.
+
 Resume flat training from a specific checkpoint:
 
 ```bash

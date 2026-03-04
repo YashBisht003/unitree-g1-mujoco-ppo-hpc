@@ -89,5 +89,32 @@ if [ -n "${PLAYGROUND_CONFIG_OVERRIDES:-}" ]; then
   CMD+=(--playground_config_overrides="${PLAYGROUND_CONFIG_OVERRIDES}")
 fi
 
+CKPT_ARG="${FLAT_CKPT}"
+if [ -d "${FLAT_CKPT}" ]; then
+  CKPT_BASE="$(basename "${FLAT_CKPT}")"
+  HAS_CHILD_DIR=0
+  if find "${FLAT_CKPT}" -mindepth 1 -maxdepth 1 -type d | read -r _; then
+    HAS_CHILD_DIR=1
+  fi
+  if echo "${CKPT_BASE}" | grep -Eq '^[0-9]+$' && [ "${HAS_CHILD_DIR}" = "0" ]; then
+    WRAP_DIR="${ROOT_DIR}/.resume_ckpt_rough"
+    rm -rf "${WRAP_DIR}"
+    mkdir -p "${WRAP_DIR}"
+    if ln -s "${FLAT_CKPT}" "${WRAP_DIR}/${CKPT_BASE}" 2>/dev/null; then
+      :
+    else
+      cp -a "${FLAT_CKPT}" "${WRAP_DIR}/${CKPT_BASE}"
+    fi
+    CKPT_ARG="${WRAP_DIR}"
+    echo "[train-rough] wrapped checkpoint step dir ${FLAT_CKPT} as ${CKPT_ARG}/${CKPT_BASE}"
+  fi
+fi
+
+for i in "${!CMD[@]}"; do
+  if [ "${CMD[$i]}" = "--load_checkpoint_path=${FLAT_CKPT}" ]; then
+    CMD[$i]="--load_checkpoint_path=${CKPT_ARG}"
+  fi
+done
+
 echo "[train-rough] running: ${CMD[*]}"
 "${CMD[@]}"
