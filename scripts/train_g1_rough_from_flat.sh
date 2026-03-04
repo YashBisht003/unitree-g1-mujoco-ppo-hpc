@@ -28,6 +28,7 @@ unset CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_PROMPT_MODIFIER CONDA_EXE CONDA_PYTHO
 source "${VENV_DIR}/bin/activate"
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONPYCACHEPREFIX="${VENV_DIR}/.pycache"
+umask 000
 if [ "${USE_CUDA:-1}" = "1" ]; then
   VENV_SITE="$("${VENV_DIR}/bin/python" -B - <<'PY'
 import sysconfig
@@ -43,6 +44,8 @@ PY
   fi
 fi
 cd "${PLAYGROUND_DIR}"
+mkdir -p logs
+chmod 777 logs || true
 
 NUM_TIMESTEPS="${NUM_TIMESTEPS:-100000000}"
 NUM_ENVS="${NUM_ENVS:-8192}"

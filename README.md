@@ -127,6 +127,7 @@ Bootstrap defaults to `USE_WANDB_SHIM=1` with `INSTALL_WANDB=0`, so training wor
 Bootstrap also installs an MJX `make_data` compatibility shim in MuJoCo Playground so `mujoco-mjx==3.3.4` works across API differences (`nconmax`/`njmax` kwargs).
 Bootstrap also rewrites legacy `jp.clip(..., min=/max=...)` calls to `a_min=/a_max=` for JAX 0.4 compatibility.
 Bootstrap/training set `PYTHONDONTWRITEBYTECODE=1` and `PYTHONPYCACHEPREFIX=.venv/.pycache` to avoid writing bytecode into external conda/system stdlib paths.
+Slurm + train wrappers set permissive log/checkpoint write mode (`umask 000`, `logs` directory `777`) to avoid UID/name-mapping permission errors on some HPC nodes.
 Bootstrap now pre-downloads `mujoco_menagerie` on login node using git-compatible clone/checkout logic (works on old git without `-C`), and offline mode validates that assets are present before submit.
 If your GPU nodes report `cudaErrorInsufficientDriver`, submit with `USE_CUDA=0` to force JAX CPU backend (`JAX_PLATFORMS=cpu`) while keeping the same training pipeline. Slurm scripts also auto-fallback to CPU when `nvidia-smi` shows driver major `< 525` or is unavailable on the node.
 When `USE_CUDA=0`, submit wrappers choose CPU sbatch files (`slurm/g1_flat_cpu.sbatch` / `slurm/g1_rough_cpu.sbatch`) and do not request GPU resources.

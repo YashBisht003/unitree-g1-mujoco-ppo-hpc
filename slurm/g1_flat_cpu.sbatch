@@ -9,11 +9,11 @@
 #SBATCH --error=logs/%x-%j.err
 
 set -euo pipefail
-umask 022
+umask 000
 
 cd "${SLURM_SUBMIT_DIR}"
 mkdir -p logs
-chmod 755 logs || true
+chmod 777 logs || true
 
 # Sanitize inherited submit-shell conda/python vars.
 unset PYTHONHOME PYTHONPATH PYTHONSTARTUP PYTHONUSERBASE __PYVENV_LAUNCHER__ || true
