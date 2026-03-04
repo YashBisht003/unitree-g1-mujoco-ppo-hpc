@@ -21,10 +21,19 @@ Paper setup reports very large scale (`32768` envs) and long horizon (`400M`) fo
 - `scripts/bootstrap_env.sh`: create isolated `.venv`, clone/update MuJoCo Playground, install deps.
 - `scripts/train_g1_flat.sh`: stage-1 flat-terrain PPO.
 - `scripts/train_g1_rough_from_flat.sh`: stage-2 rough-terrain finetuning from flat checkpoint.
+- `scripts/train_g1_push_recovery.sh`: stage-3 push-recovery finetuning from rough checkpoint.
+- `scripts/submit_push_recovery.sh`: submit push-recovery runs with mode selection.
+- `scripts/submit_log_only.sh`: run grouping/log-only MaxRL scaffold smoke job.
+- `scripts/latest_flat_checkpoint.sh`: latest flat step directory helper.
+- `scripts/latest_rough_checkpoint.sh`: latest rough step directory helper.
 - `slurm/g1_flat_gpu.sbatch`: Param Ganga style GPU job for flat stage.
 - `slurm/g1_rough_gpu.sbatch`: Param Ganga style GPU job for rough stage.
+- `slurm/g1_push_recovery_gpu.sbatch`: push recovery PPO dense baseline.
+- `slurm/g1_push_maxrl_gpu.sbatch`: push recovery MaxRL-binary ablation.
+- `slurm/g1_push_maxrl_t_gpu.sbatch`: push recovery temporal MaxRL ablation.
 - `slurm/g1_flat_cpu.sbatch`: CPU-only job for flat stage (for old NVIDIA driver clusters).
 - `slurm/g1_rough_cpu.sbatch`: CPU-only job for rough stage.
+- `research/`: verifier/logger/grouping/advantage scaffolds for MaxRL-T experiments.
 
 ## Quick start (on HPC login node)
 
@@ -90,6 +99,98 @@ Or with wrapper:
 cd unitree_g1_mujoco_ppo_hpc
 export FLAT_CKPT="$(bash scripts/latest_flat_checkpoint.sh)"
 bash scripts/submit_rough.sh
+```
+
+`latest_flat_checkpoint.sh` now returns the latest **step directory** (for example `.../checkpoints/000153190400`), not just the checkpoints root.
+
+## MaxRL scaffold (phase 1: logging + grouping)
+
+This repo now includes a bootstrap-time shim that adds non-breaking MaxRL/TBCS
+flags to `mujoco_playground/learning/train_jax_ppo.py`:
+
+- `--adv_mode` (`ppo`, `maxrl_binary`, `maxrl_temporal`)
+- `--scenario_group_size` (for grouped-rollout validation/logging)
+- `--maxrl_log_only` (keep PPO gradients, log scaffold diagnostics only)
+- `--maxrl_scenario_key`, `--maxrl_verbose`
+
+Important: current shim is **scaffold-only**. It validates grouping and logs
+mode metadata, but training objective remains PPO.
+
+Example (flat, grouped logging only):
+
+```bash
+ADV_MODE=maxrl_binary \
+SCENARIO_GROUP_SIZE=8 \
+MAXRL_LOG_ONLY=1 \
+NUM_ENVS=1024 \
+bash scripts/submit_flat.sh
+```
+
+Example (rough, grouped logging only):
+
+```bash
+export FLAT_CKPT="$(bash scripts/latest_flat_checkpoint.sh)"
+ADV_MODE=maxrl_binary \
+SCENARIO_GROUP_SIZE=8 \
+MAXRL_LOG_ONLY=1 \
+NUM_ENVS=1024 \
+bash scripts/submit_rough.sh
+```
+
+## Research: Push Recovery
+
+The push-recovery ablation stack uses one rough checkpoint as input and supports:
+
+- `MODE=ppo_dense` (baseline PPO shaping objective)
+- `MODE=maxrl_binary` (MaxRL binary verifier mode scaffold)
+- `MODE=maxrl_t` (temporal binary signature mode scaffold)
+
+Pick latest rough checkpoint:
+
+```bash
+export ROUGH_CKPT="$(bash scripts/latest_rough_checkpoint.sh)"
+```
+
+Run push recovery baseline:
+
+```bash
+MODE=ppo_dense \
+NUM_ENVS=1024 NUM_EVAL_ENVS=128 NUM_TIMESTEPS=50000000 \
+SCENARIO_GROUP_SIZE=8 \
+bash scripts/submit_push_recovery.sh
+```
+
+Run MaxRL-binary scaffold:
+
+```bash
+MODE=maxrl_binary \
+NUM_ENVS=1024 NUM_EVAL_ENVS=128 NUM_TIMESTEPS=50000000 \
+SCENARIO_GROUP_SIZE=8 \
+bash scripts/submit_push_recovery.sh
+```
+
+Run MaxRL-T scaffold:
+
+```bash
+MODE=maxrl_t \
+NUM_ENVS=1024 NUM_EVAL_ENVS=128 NUM_TIMESTEPS=50000000 \
+SCENARIO_GROUP_SIZE=8 \
+bash scripts/submit_push_recovery.sh
+```
+
+Logging-first smoke run (recommended before any objective changes):
+
+```bash
+export ROUGH_CKPT="$(bash scripts/latest_rough_checkpoint.sh)"
+bash scripts/submit_log_only.sh
+```
+
+Aggressive push settings can be passed through `PLAYGROUND_CONFIG_OVERRIDES`, for example:
+
+```bash
+PLAYGROUND_CONFIG_OVERRIDES='{"push_config":{"enable":true,"magnitude_range":[0.1,8.0],"interval_range":[2.0,6.0]}}' \
+MODE=ppo_dense \
+bash scripts/submit_push_recovery.sh
 ```
 
 ## Windows to HPC transfer

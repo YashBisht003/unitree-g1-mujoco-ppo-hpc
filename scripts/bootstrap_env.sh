@@ -182,6 +182,147 @@ else:
 PY
 }
 
+apply_maxrl_scaffold_shim() {
+  local target="${PLAYGROUND_DIR}/learning/train_jax_ppo.py"
+  if [ ! -f "${target}" ]; then
+    echo "[bootstrap] warning: ${target} not found; skipping MaxRL scaffold shim."
+    return 0
+  fi
+
+  "${PYTHON_BIN}" - "${target}" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+marker = "__codex_maxrl_scaffold_v1__"
+if marker in text:
+  print("[bootstrap] MaxRL scaffold shim already present")
+  raise SystemExit(0)
+
+flags_block = """
+# __MARKER__
+_ADV_MODE = flags.DEFINE_enum(
+    "adv_mode",
+    "ppo",
+    ["ppo", "maxrl_binary", "maxrl_temporal"],
+    "Advantage mode scaffold: baseline PPO, MaxRL-binary, or temporal-binary.",
+)
+_SCENARIO_GROUP_SIZE = flags.DEFINE_integer(
+    "scenario_group_size",
+    0,
+    "If >0, enforce fixed rollout grouping (num_envs must be divisible).",
+)
+_MAXRL_LOG_ONLY = flags.DEFINE_boolean(
+    "maxrl_log_only",
+    False,
+    "If true, emit MaxRL scaffold logs only and keep PPO gradients unchanged.",
+)
+_MAXRL_SCENARIO_KEY = flags.DEFINE_string(
+    "maxrl_scenario_key",
+    "",
+    "Optional scenario descriptor printed in MaxRL scaffold logs.",
+)
+_MAXRL_VERBOSE = flags.DEFINE_boolean(
+    "maxrl_verbose",
+    False,
+    "Enable verbose MaxRL scaffold logging.",
+)
+"""
+flags_block = flags_block.replace("__MARKER__", marker)
+
+helpers_block = """
+# __MARKER__
+def _log_maxrl_scaffold_config(num_envs: int) -> None:
+  \"\"\"Validates grouping inputs and prints MaxRL scaffold diagnostics.\"\"\"
+
+  adv_mode = _ADV_MODE.value
+  group = _SCENARIO_GROUP_SIZE.value
+  if group < 0:
+    raise ValueError(
+        f"Invalid --scenario_group_size={group}. Expected >= 0."
+    )
+
+  scenario_count = 0
+  if group > 0:
+    if num_envs % group != 0:
+      raise ValueError(
+          "scenario_group_size must divide num_envs exactly: "
+          f"num_envs={num_envs}, scenario_group_size={group}"
+      )
+    scenario_count = num_envs // group
+    print(
+        "[maxrl] scenario grouping enabled: "
+        f"{scenario_count} scenarios x {group} rollouts (num_envs={num_envs})."
+    )
+  elif adv_mode != "ppo":
+    print(
+        "[maxrl] warning: adv_mode requested without scenario grouping "
+        f"(adv_mode={adv_mode}, scenario_group_size={group})."
+    )
+
+  if _MAXRL_SCENARIO_KEY.value:
+    print(f"[maxrl] scenario key: {_MAXRL_SCENARIO_KEY.value}")
+
+  if adv_mode != "ppo":
+    print(
+        "[maxrl] adv_mode scaffold active: "
+        f"{adv_mode} (training objective remains PPO in this shim)."
+    )
+
+  if _MAXRL_LOG_ONLY.value:
+    print("[maxrl] maxrl_log_only=True (logging scaffold only).")
+
+  if _MAXRL_VERBOSE.value:
+    print(
+        "[maxrl] verbose: "
+        f"num_envs={num_envs}, scenario_group_size={group}, "
+        f"scenario_count={scenario_count}, adv_mode={adv_mode}"
+    )
+"""
+helpers_block = helpers_block.replace("__MARKER__", marker)
+
+if "def get_rl_config(" not in text or "def main(argv):" not in text:
+  print("[bootstrap] MaxRL scaffold shim target layout not recognized; skipping")
+  raise SystemExit(0)
+
+if "_ADV_MODE = flags.DEFINE_enum(" not in text:
+  text, n = re.subn(
+      r"\n\ndef get_rl_config\(",
+      "\n\n" + flags_block + "\n\ndef get_rl_config(",
+      text,
+      count=1,
+  )
+  if n == 0:
+    print("[bootstrap] MaxRL scaffold flags insertion failed; skipping")
+    raise SystemExit(0)
+
+if "def _log_maxrl_scaffold_config(" not in text:
+  text, n = re.subn(
+      r"\n\ndef main\(argv\):",
+      "\n\n" + helpers_block + "\n\ndef main(argv):",
+      text,
+      count=1,
+  )
+  if n == 0:
+    print("[bootstrap] MaxRL scaffold helper insertion failed; skipping")
+    raise SystemExit(0)
+
+call_anchor = '  print(f"PPO Training Parameters:\\n{ppo_params}")\n'
+call_line = "  _log_maxrl_scaffold_config(int(ppo_params.num_envs))\n"
+if call_line not in text:
+  if call_anchor in text:
+    text = text.replace(call_anchor, call_anchor + call_line, 1)
+  else:
+    print("[bootstrap] MaxRL scaffold call anchor missing; skipping")
+    raise SystemExit(0)
+
+path.write_text(text)
+print(f"[bootstrap] installed MaxRL scaffold shim at {path}")
+PY
+}
+
 if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
   echo "ERROR: ${PYTHON_BIN} not found. Set PYTHON_BIN to a valid Python 3.10+ binary."
   exit 1
@@ -257,6 +398,7 @@ if [ "${BOOTSTRAP_OFFLINE}" = "1" ]; then
   fi
   apply_mjx_make_data_compat_shim
   apply_jax_clip_kwarg_compat_shim
+  apply_maxrl_scaffold_shim
   VENV_PY="${VENV_DIR}/bin/python"
   if [ ! -x "${VENV_PY}" ]; then
     echo "ERROR: missing ${VENV_PY}. Re-run with BOOTSTRAP_OFFLINE=0 once."
@@ -392,6 +534,7 @@ git_in_repo "${PLAYGROUND_DIR}" fetch --all --tags
 git_in_repo "${PLAYGROUND_DIR}" checkout "${PLAYGROUND_REF}"
 apply_mjx_make_data_compat_shim
 apply_jax_clip_kwarg_compat_shim
+apply_maxrl_scaffold_shim
 
 if [ -n "${NUMPY_VERSION}" ]; then
   "${VENV_PY}" -B -m pip install "${PIP_FLAGS[@]}" --upgrade --prefer-binary -c "${CONSTRAINTS_FILE}" "numpy==${NUMPY_VERSION}"

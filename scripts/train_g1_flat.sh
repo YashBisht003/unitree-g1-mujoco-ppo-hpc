@@ -47,6 +47,11 @@ SEED="${SEED:-1}"
 SUFFIX="${SUFFIX:-g1-flat-seed${SEED}}"
 USE_TB="${USE_TB:-1}"
 USE_WANDB="${USE_WANDB:-0}"
+ADV_MODE="${ADV_MODE:-}"
+SCENARIO_GROUP_SIZE="${SCENARIO_GROUP_SIZE:-}"
+MAXRL_LOG_ONLY="${MAXRL_LOG_ONLY:-}"
+MAXRL_SCENARIO_KEY="${MAXRL_SCENARIO_KEY:-}"
+MAXRL_VERBOSE="${MAXRL_VERBOSE:-}"
 
 export MUJOCO_GL="${MUJOCO_GL:-egl}"
 export XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
@@ -82,6 +87,21 @@ CMD=(
 
 if [ -n "${PLAYGROUND_CONFIG_OVERRIDES:-}" ]; then
   CMD+=(--playground_config_overrides="${PLAYGROUND_CONFIG_OVERRIDES}")
+fi
+if [ -n "${ADV_MODE}" ]; then
+  CMD+=(--adv_mode="${ADV_MODE}")
+fi
+if [ -n "${SCENARIO_GROUP_SIZE}" ]; then
+  CMD+=(--scenario_group_size="${SCENARIO_GROUP_SIZE}")
+fi
+if [ -n "${MAXRL_LOG_ONLY}" ]; then
+  CMD+=(--maxrl_log_only="${MAXRL_LOG_ONLY}")
+fi
+if [ -n "${MAXRL_SCENARIO_KEY}" ]; then
+  CMD+=(--maxrl_scenario_key="${MAXRL_SCENARIO_KEY}")
+fi
+if [ -n "${MAXRL_VERBOSE}" ]; then
+  CMD+=(--maxrl_verbose="${MAXRL_VERBOSE}")
 fi
 if [ -n "${LOAD_CKPT:-}" ]; then
   CKPT_ARG="${LOAD_CKPT}"

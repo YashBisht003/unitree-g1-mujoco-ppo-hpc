@@ -16,8 +16,11 @@ if (Test-Path $archivePath) {
 $items = @(
   "README.md",
   ".gitignore",
+  "GITHUB_IMPORT.md",
+  "LICENSE",
   "scripts",
-  "slurm"
+  "slurm",
+  "research"
 )
 
 $paths = @()

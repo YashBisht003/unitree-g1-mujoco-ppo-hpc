@@ -9,9 +9,9 @@ if [ ! -d "${LOG_ROOT}" ]; then
   exit 1
 fi
 
-latest_run="$(find "${LOG_ROOT}" -maxdepth 1 -mindepth 1 -type d -name 'G1JoystickFlatTerrain-*' | sort | tail -n 1)"
+latest_run="$(find "${LOG_ROOT}" -maxdepth 1 -mindepth 1 -type d -name 'G1JoystickRoughTerrain-*' | sort | tail -n 1)"
 if [ -z "${latest_run}" ]; then
-  echo "ERROR: no flat-terrain runs found in ${LOG_ROOT}" >&2
+  echo "ERROR: no rough-terrain runs found in ${LOG_ROOT}" >&2
   exit 1
 fi
 
