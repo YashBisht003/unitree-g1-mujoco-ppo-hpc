@@ -56,6 +56,8 @@ export LOAD_CKPT=/absolute/path/to/mujoco_playground/logs/<flat_run>/checkpoints
 bash scripts/train_g1_flat.sh
 ```
 
+Note: `train_jax_ppo.py` expects a checkpoints root directory; this wrapper also accepts a leaf step directory and wraps it automatically.
+
 ## Slurm submission
 
 Flat stage:

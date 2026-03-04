@@ -81,7 +81,28 @@ if [ -n "${PLAYGROUND_CONFIG_OVERRIDES:-}" ]; then
   CMD+=(--playground_config_overrides="${PLAYGROUND_CONFIG_OVERRIDES}")
 fi
 if [ -n "${LOAD_CKPT:-}" ]; then
-  CMD+=(--load_checkpoint_path="${LOAD_CKPT}")
+  CKPT_ARG="${LOAD_CKPT}"
+  if [ -d "${LOAD_CKPT}" ]; then
+    CKPT_BASE="$(basename "${LOAD_CKPT}")"
+    HAS_CHILD_DIR=0
+    if find "${LOAD_CKPT}" -mindepth 1 -maxdepth 1 -type d | read -r _; then
+      HAS_CHILD_DIR=1
+    fi
+    if echo "${CKPT_BASE}" | grep -Eq '^[0-9]+$' && [ "${HAS_CHILD_DIR}" = "0" ]; then
+      # train_jax_ppo expects a directory whose children are step directories.
+      WRAP_DIR="${ROOT_DIR}/.resume_ckpt_flat"
+      rm -rf "${WRAP_DIR}"
+      mkdir -p "${WRAP_DIR}"
+      if ln -s "${LOAD_CKPT}" "${WRAP_DIR}/${CKPT_BASE}" 2>/dev/null; then
+        :
+      else
+        cp -a "${LOAD_CKPT}" "${WRAP_DIR}/${CKPT_BASE}"
+      fi
+      CKPT_ARG="${WRAP_DIR}"
+      echo "[train-flat] wrapped checkpoint step dir ${LOAD_CKPT} as ${CKPT_ARG}/${CKPT_BASE}"
+    fi
+  fi
+  CMD+=(--load_checkpoint_path="${CKPT_ARG}")
 fi
 
 echo "[train-flat] running: ${CMD[*]}"
