@@ -49,6 +49,13 @@ export FLAT_CKPT=/absolute/path/to/mujoco_playground/logs/<flat_run>/checkpoints
 bash scripts/train_g1_rough_from_flat.sh
 ```
 
+Resume flat training from a specific checkpoint:
+
+```bash
+export LOAD_CKPT=/absolute/path/to/mujoco_playground/logs/<flat_run>/checkpoints/<step_dir>
+bash scripts/train_g1_flat.sh
+```
+
 ## Slurm submission
 
 Flat stage:

@@ -80,6 +80,9 @@ CMD=(
 if [ -n "${PLAYGROUND_CONFIG_OVERRIDES:-}" ]; then
   CMD+=(--playground_config_overrides="${PLAYGROUND_CONFIG_OVERRIDES}")
 fi
+if [ -n "${LOAD_CKPT:-}" ]; then
+  CMD+=(--load_checkpoint_path="${LOAD_CKPT}")
+fi
 
 echo "[train-flat] running: ${CMD[*]}"
 "${CMD[@]}"
