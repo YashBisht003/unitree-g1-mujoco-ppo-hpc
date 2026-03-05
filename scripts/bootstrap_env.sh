@@ -196,7 +196,7 @@ import sys
 
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-marker = "__codex_maxrl_scaffold_v2__"
+marker = "__codex_maxrl_scaffold_v3__"
 if marker in text:
   print("[bootstrap] MaxRL scaffold shim already present")
   raise SystemExit(0)
@@ -321,16 +321,16 @@ def _compute_ppo_loss_with_maxrl(
   group_size = int(_SCENARIO_GROUP_SIZE.value)
 
   if adv_mode == "maxrl_binary" and not _MAXRL_LOG_ONLY.value:
-    rollout_alive = 1.0 - jp.max(termination, axis=0)
-    rollout_reward = jp.mean(rewards, axis=0)
-    reward_threshold = jp.median(rollout_reward)
-    rollout_success = rollout_alive * (rollout_reward >= reward_threshold).astype(rollout_alive.dtype)
+    # Binary verifier: rollout succeeds iff no termination event happened.
+    # In G1 locomotion, termination tracks fall/unsafe episode end.
+    rollout_success = 1.0 - jp.max(termination, axis=0)
     rollout_weights = _groupwise_binary_weights(rollout_success, group_size)
     # Re-scale by batch-size so objective magnitude stays near PPO.
     advantages = advantages * rollout_weights[None, :] * advantages.shape[1]
     maxrl_success_rate = jp.mean(rollout_success)
   elif adv_mode == "maxrl_temporal" and not _MAXRL_LOG_ONLY.value:
-    temporal_success = (1.0 - termination) * (rewards > 0.0).astype(rewards.dtype)
+    # Temporal verifier: alive mask per (t, rollout).
+    temporal_success = 1.0 - termination
     temporal_weights = _groupwise_temporal_weights(temporal_success, group_size)
     advantages = advantages * temporal_weights * advantages.shape[1]
     maxrl_success_rate = jp.mean(temporal_success)
@@ -450,13 +450,21 @@ if "_ADV_MODE = flags.DEFINE_enum(" not in text:
     raise SystemExit(0)
 
 text, replaced_helpers = re.subn(
-    r"\n\ndef _log_maxrl_scaffold_config\([\s\S]*?\n\ndef main\(argv\):",
+    r"\n# __codex_maxrl_scaffold_v[0-9A-Za-z_]+__\n(?:def _groupwise_binary_weights|def _log_maxrl_scaffold_config)[\s\S]*?\n\ndef main\(argv\):",
     "\n\n" + helpers_block + "\n\ndef main(argv):",
     text,
     count=1,
 )
 
-if replaced_helpers == 0 and "def _log_maxrl_scaffold_config(" not in text:
+if replaced_helpers == 0:
+  text, replaced_helpers = re.subn(
+      r"\n\ndef _groupwise_binary_weights\([\s\S]*?\n\ndef main\(argv\):",
+      "\n\n" + helpers_block + "\n\ndef main(argv):",
+      text,
+      count=1,
+  )
+
+if replaced_helpers == 0 and "def _groupwise_binary_weights(" not in text and "def _log_maxrl_scaffold_config(" not in text:
   text, n = re.subn(
       r"\n\ndef main\(argv\):",
       "\n\n" + helpers_block + "\n\ndef main(argv):",
