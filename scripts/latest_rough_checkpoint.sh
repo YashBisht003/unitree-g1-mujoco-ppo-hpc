@@ -9,22 +9,26 @@ if [ ! -d "${LOG_ROOT}" ]; then
   exit 1
 fi
 
-latest_run="$(find "${LOG_ROOT}" -maxdepth 1 -mindepth 1 -type d -name 'G1JoystickRoughTerrain-*' | sort | tail -n 1)"
-if [ -z "${latest_run}" ]; then
-  echo "ERROR: no rough-terrain runs found in ${LOG_ROOT}" >&2
+latest_ckpt=""
+while IFS= read -r run_dir; do
+  # Exclude push-recovery runs; we want a base rough checkpoint source.
+  if echo "${run_dir}" | grep -q -- "-g1-push-"; then
+    continue
+  fi
+
+  ckpt_dir="${run_dir}/checkpoints"
+  [ -d "${ckpt_dir}" ] || continue
+
+  latest_step="$(find "${ckpt_dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null | grep -E '^[0-9]+$' | sort -n | tail -n 1)"
+  if [ -n "${latest_step}" ]; then
+    latest_ckpt="${ckpt_dir}/${latest_step}"
+    break
+  fi
+done < <(find "${LOG_ROOT}" -maxdepth 1 -mindepth 1 -type d -name 'G1JoystickRoughTerrain-*' | sort -r)
+
+if [ -z "${latest_ckpt}" ]; then
+  echo "ERROR: no valid non-push rough checkpoint found in ${LOG_ROOT}" >&2
   exit 1
 fi
 
-ckpt_dir="${latest_run}/checkpoints"
-if [ ! -d "${ckpt_dir}" ]; then
-  echo "ERROR: checkpoint directory not found: ${ckpt_dir}" >&2
-  exit 1
-fi
-
-latest_step="$(find "${ckpt_dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' | grep -E '^[0-9]+$' | sort -n | tail -n 1)"
-if [ -z "${latest_step}" ]; then
-  echo "ERROR: no step directories found in ${ckpt_dir}" >&2
-  exit 1
-fi
-
-echo "${ckpt_dir}/${latest_step}"
+echo "${latest_ckpt}"

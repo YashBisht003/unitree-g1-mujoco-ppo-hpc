@@ -196,10 +196,18 @@ import sys
 
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-marker = "__codex_maxrl_scaffold_v1__"
+marker = "__codex_maxrl_scaffold_v2__"
 if marker in text:
   print("[bootstrap] MaxRL scaffold shim already present")
   raise SystemExit(0)
+
+if "from brax.training.agents.ppo import losses as ppo_losses" not in text:
+  text = text.replace(
+      "from brax.training.agents.ppo import train as ppo\n",
+      "from brax.training.agents.ppo import losses as ppo_losses\n"
+      "from brax.training.agents.ppo import train as ppo\n",
+      1,
+  )
 
 flags_block = """
 # __MARKER__
@@ -217,7 +225,7 @@ _SCENARIO_GROUP_SIZE = flags.DEFINE_integer(
 _MAXRL_LOG_ONLY = flags.DEFINE_boolean(
     "maxrl_log_only",
     False,
-    "If true, emit MaxRL scaffold logs only and keep PPO gradients unchanged.",
+    "If true, emit MaxRL diagnostics only and keep baseline PPO loss.",
 )
 _MAXRL_SCENARIO_KEY = flags.DEFINE_string(
     "maxrl_scenario_key",
@@ -234,8 +242,151 @@ flags_block = flags_block.replace("__MARKER__", marker)
 
 helpers_block = """
 # __MARKER__
+def _groupwise_binary_weights(success, group_size: int):
+  \"\"\"Computes per-rollout MaxRL weights (r_i / K) inside scenario groups.\"\"\"
+
+  batch = int(success.shape[0])
+  if group_size <= 0 or batch % group_size != 0:
+    k = jp.sum(success)
+    return jp.where(k > 0, success / (k + 1e-8), jp.zeros_like(success))
+
+  grouped = jp.reshape(success, (-1, group_size))
+  k = jp.sum(grouped, axis=1, keepdims=True)
+  grouped_w = jp.where(k > 0, grouped / (k + 1e-8), jp.zeros_like(grouped))
+  return jp.reshape(grouped_w, (batch,))
+
+
+def _groupwise_temporal_weights(temporal_success, group_size: int):
+  \"\"\"Computes per-(t, rollout) MaxRL-T weights within scenario groups.\"\"\"
+
+  steps = int(temporal_success.shape[0])
+  batch = int(temporal_success.shape[1])
+  if group_size <= 0 or batch % group_size != 0:
+    k = jp.sum(temporal_success, axis=1, keepdims=True)
+    return jp.where(k > 0, temporal_success / (k + 1e-8), jp.zeros_like(temporal_success))
+
+  grouped = jp.reshape(temporal_success, (steps, -1, group_size))
+  k = jp.sum(grouped, axis=2, keepdims=True)
+  grouped_w = jp.where(k > 0, grouped / (k + 1e-8), jp.zeros_like(grouped))
+  return jp.reshape(grouped_w, (steps, batch))
+
+
+def _compute_ppo_loss_with_maxrl(
+    params,
+    normalizer_params,
+    data,
+    rng,
+    ppo_network,
+    entropy_cost=1e-4,
+    discounting=0.9,
+    reward_scaling=1.0,
+    gae_lambda=0.95,
+    clipping_epsilon=0.3,
+    normalize_advantage=True,
+):
+  \"\"\"Drop-in replacement for Brax PPO loss with MaxRL/MaxRL-T reweighting.\"\"\"
+
+  parametric_action_distribution = ppo_network.parametric_action_distribution
+  policy_apply = ppo_network.policy_network.apply
+  value_apply = ppo_network.value_network.apply
+
+  data = jax.tree_util.tree_map(lambda x: jp.swapaxes(x, 0, 1), data)
+  policy_logits = policy_apply(normalizer_params, params.policy, data.observation)
+
+  baseline = value_apply(normalizer_params, params.value, data.observation)
+  terminal_obs = jax.tree_util.tree_map(lambda x: x[-1], data.next_observation)
+  bootstrap_value = value_apply(normalizer_params, params.value, terminal_obs)
+
+  rewards = data.reward * reward_scaling
+  truncation = data.extras["state_extras"]["truncation"]
+  termination = (1 - data.discount) * (1 - truncation)
+
+  target_action_log_probs = parametric_action_distribution.log_prob(
+      policy_logits, data.extras["policy_extras"]["raw_action"]
+  )
+  behaviour_action_log_probs = data.extras["policy_extras"]["log_prob"]
+
+  vs, advantages = ppo_losses.compute_gae(
+      truncation=truncation,
+      termination=termination,
+      rewards=rewards,
+      values=baseline,
+      bootstrap_value=bootstrap_value,
+      lambda_=gae_lambda,
+      discount=discounting,
+  )
+
+  maxrl_success_rate = jp.array(0.0, dtype=rewards.dtype)
+  adv_mode = _ADV_MODE.value
+  group_size = int(_SCENARIO_GROUP_SIZE.value)
+
+  if adv_mode == "maxrl_binary" and not _MAXRL_LOG_ONLY.value:
+    rollout_alive = 1.0 - jp.max(termination, axis=0)
+    rollout_reward = jp.mean(rewards, axis=0)
+    reward_threshold = jp.median(rollout_reward)
+    rollout_success = rollout_alive * (rollout_reward >= reward_threshold).astype(rollout_alive.dtype)
+    rollout_weights = _groupwise_binary_weights(rollout_success, group_size)
+    # Re-scale by batch-size so objective magnitude stays near PPO.
+    advantages = advantages * rollout_weights[None, :] * advantages.shape[1]
+    maxrl_success_rate = jp.mean(rollout_success)
+  elif adv_mode == "maxrl_temporal" and not _MAXRL_LOG_ONLY.value:
+    temporal_success = (1.0 - termination) * (rewards > 0.0).astype(rewards.dtype)
+    temporal_weights = _groupwise_temporal_weights(temporal_success, group_size)
+    advantages = advantages * temporal_weights * advantages.shape[1]
+    maxrl_success_rate = jp.mean(temporal_success)
+  elif normalize_advantage:
+    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+  if normalize_advantage and adv_mode != "ppo" and not _MAXRL_LOG_ONLY.value:
+    # Secondary stabilization after MaxRL weighting.
+    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+  rho_s = jp.exp(target_action_log_probs - behaviour_action_log_probs)
+  surrogate_loss1 = rho_s * advantages
+  surrogate_loss2 = jp.clip(rho_s, 1 - clipping_epsilon, 1 + clipping_epsilon) * advantages
+  policy_loss = -jp.mean(jp.minimum(surrogate_loss1, surrogate_loss2))
+
+  v_error = vs - baseline
+  v_loss = jp.mean(v_error * v_error) * 0.5 * 0.5
+
+  entropy = jp.mean(parametric_action_distribution.entropy(policy_logits, rng))
+  entropy_loss = entropy_cost * -entropy
+
+  total_loss = policy_loss + v_loss + entropy_loss
+  metrics = {
+      "total_loss": total_loss,
+      "policy_loss": policy_loss,
+      "v_loss": v_loss,
+      "entropy_loss": entropy_loss,
+  }
+  if adv_mode != "ppo":
+    metrics["maxrl/success_rate"] = maxrl_success_rate
+  return total_loss, metrics
+
+
+def _install_maxrl_loss_patch() -> None:
+  \"\"\"Installs runtime PPO-loss patch when adv_mode requests MaxRL behavior.\"\"\"
+
+  adv_mode = _ADV_MODE.value
+  if adv_mode == "ppo":
+    return
+  if _MAXRL_LOG_ONLY.value:
+    print("[maxrl] maxrl_log_only=True -> keeping baseline PPO loss.")
+    return
+
+  patched_name = getattr(ppo_losses.compute_ppo_loss, "__name__", "")
+  if patched_name == "_compute_ppo_loss_with_maxrl":
+    return
+
+  ppo_losses.compute_ppo_loss = _compute_ppo_loss_with_maxrl
+  print(
+      "[maxrl] installed PPO loss patch "
+      f"(adv_mode={adv_mode}, scenario_group_size={_SCENARIO_GROUP_SIZE.value})."
+  )
+
+
 def _log_maxrl_scaffold_config(num_envs: int) -> None:
-  \"\"\"Validates grouping inputs and prints MaxRL scaffold diagnostics.\"\"\"
+  \"\"\"Validates grouping inputs and prints MaxRL diagnostics.\"\"\"
 
   adv_mode = _ADV_MODE.value
   group = _SCENARIO_GROUP_SIZE.value
@@ -267,12 +418,12 @@ def _log_maxrl_scaffold_config(num_envs: int) -> None:
 
   if adv_mode != "ppo":
     print(
-        "[maxrl] adv_mode scaffold active: "
-        f"{adv_mode} (training objective remains PPO in this shim)."
+        "[maxrl] adv_mode active: "
+        f"{adv_mode} (set --maxrl_log_only=False to enable objective patch)."
     )
 
   if _MAXRL_LOG_ONLY.value:
-    print("[maxrl] maxrl_log_only=True (logging scaffold only).")
+    print("[maxrl] maxrl_log_only=True (diagnostics only).")
 
   if _MAXRL_VERBOSE.value:
     print(
@@ -298,7 +449,14 @@ if "_ADV_MODE = flags.DEFINE_enum(" not in text:
     print("[bootstrap] MaxRL scaffold flags insertion failed; skipping")
     raise SystemExit(0)
 
-if "def _log_maxrl_scaffold_config(" not in text:
+text, replaced_helpers = re.subn(
+    r"\n\ndef _log_maxrl_scaffold_config\([\s\S]*?\n\ndef main\(argv\):",
+    "\n\n" + helpers_block + "\n\ndef main(argv):",
+    text,
+    count=1,
+)
+
+if replaced_helpers == 0 and "def _log_maxrl_scaffold_config(" not in text:
   text, n = re.subn(
       r"\n\ndef main\(argv\):",
       "\n\n" + helpers_block + "\n\ndef main(argv):",
@@ -311,11 +469,19 @@ if "def _log_maxrl_scaffold_config(" not in text:
 
 call_anchor = '  print(f"PPO Training Parameters:\\n{ppo_params}")\n'
 call_line = "  _log_maxrl_scaffold_config(int(ppo_params.num_envs))\n"
+install_line = "  _install_maxrl_loss_patch()\n"
 if call_line not in text:
   if call_anchor in text:
     text = text.replace(call_anchor, call_anchor + call_line, 1)
   else:
     print("[bootstrap] MaxRL scaffold call anchor missing; skipping")
+    raise SystemExit(0)
+
+if install_line not in text:
+  if call_line in text:
+    text = text.replace(call_line, call_line + install_line, 1)
+  else:
+    print("[bootstrap] MaxRL install call anchor missing; skipping")
     raise SystemExit(0)
 
 path.write_text(text)
