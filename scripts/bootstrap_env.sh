@@ -532,6 +532,24 @@ if "_ADV_MODE = flags.DEFINE_enum(" not in text:
     print("[bootstrap] MaxRL scaffold flags insertion failed; skipping")
     raise SystemExit(0)
 
+if "_MAXRL_EPISODE_VERIFIER = flags.DEFINE_boolean(" not in text:
+  episode_flag_block = """
+_MAXRL_EPISODE_VERIFIER = flags.DEFINE_boolean(
+    "maxrl_episode_verifier",
+    True,
+    "Use episode_done-aware verifier for maxrl_binary (Option A).",
+)
+"""
+  text, n = re.subn(
+      r"\n\ndef get_rl_config\(",
+      "\n" + episode_flag_block + "\n\ndef get_rl_config(",
+      text,
+      count=1,
+  )
+  if n == 0:
+    print("[bootstrap] MaxRL episode verifier flag insertion failed; skipping")
+    raise SystemExit(0)
+
 text, replaced_helpers = re.subn(
     r"\n# __codex_maxrl_scaffold_v[0-9A-Za-z_]+__\n(?:def _groupwise_binary_weights|def _log_maxrl_scaffold_config)[\s\S]*?\n\ndef main\(argv\):",
     "\n\n" + helpers_block + "\n\ndef main(argv):",
