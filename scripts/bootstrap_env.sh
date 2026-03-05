@@ -196,7 +196,7 @@ import sys
 
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-marker = "__codex_maxrl_scaffold_v3__"
+marker = "__codex_maxrl_scaffold_v4__"
 if marker in text:
   print("[bootstrap] MaxRL scaffold shim already present")
   raise SystemExit(0)
@@ -248,11 +248,17 @@ def _groupwise_binary_weights(success, group_size: int):
   batch = int(success.shape[0])
   if group_size <= 0 or batch % group_size != 0:
     k = jp.sum(success)
-    return jp.where(k > 0, success / (k + 1e-8), jp.zeros_like(success))
+    # Graceful fallback: if all fail, use uniform PPO-style weighting.
+    return jp.where(
+        k > 0, success / (k + 1e-8), jp.ones_like(success) / float(batch)
+    )
 
   grouped = jp.reshape(success, (-1, group_size))
   k = jp.sum(grouped, axis=1, keepdims=True)
-  grouped_w = jp.where(k > 0, grouped / (k + 1e-8), jp.zeros_like(grouped))
+  # Graceful fallback: if an entire group fails, keep non-zero gradient signal.
+  grouped_w = jp.where(
+      k > 0, grouped / (k + 1e-8), jp.ones_like(grouped) / float(group_size)
+  )
   return jp.reshape(grouped_w, (batch,))
 
 
@@ -263,11 +269,18 @@ def _groupwise_temporal_weights(temporal_success, group_size: int):
   batch = int(temporal_success.shape[1])
   if group_size <= 0 or batch % group_size != 0:
     k = jp.sum(temporal_success, axis=1, keepdims=True)
-    return jp.where(k > 0, temporal_success / (k + 1e-8), jp.zeros_like(temporal_success))
+    # Per-timestep graceful fallback when no rollout is successful.
+    return jp.where(
+        k > 0,
+        temporal_success / (k + 1e-8),
+        jp.ones_like(temporal_success) / float(batch),
+    )
 
   grouped = jp.reshape(temporal_success, (steps, -1, group_size))
   k = jp.sum(grouped, axis=2, keepdims=True)
-  grouped_w = jp.where(k > 0, grouped / (k + 1e-8), jp.zeros_like(grouped))
+  grouped_w = jp.where(
+      k > 0, grouped / (k + 1e-8), jp.ones_like(grouped) / float(group_size)
+  )
   return jp.reshape(grouped_w, (steps, batch))
 
 
