@@ -185,6 +185,23 @@ export ROUGH_CKPT="$(bash scripts/latest_rough_checkpoint.sh)"
 bash scripts/submit_log_only.sh
 ```
 
+Evaluate recovery-rate vs push magnitude (for result tables):
+
+```bash
+cd unitree_g1_mujoco_ppo_hpc
+source .venv/bin/activate
+python research/eval_recovery_rate.py \
+  --checkpoint_path /absolute/path/to/checkpoints/or/step_dir \
+  --push_magnitudes 2,4,6,8,10,12,15 \
+  --episodes_per_magnitude 200 \
+  --batch_size 32 \
+  --recovery_window_s 5.0 \
+  --push_interval_s 2.0 \
+  --deterministic
+```
+
+Outputs are written to `research/results/*.json` and `.csv`.
+
 Aggressive push settings can be passed through `PLAYGROUND_CONFIG_OVERRIDES`, for example:
 
 ```bash
