@@ -1,4 +1,9 @@
-"""Temporal MaxRL extension helpers (research scaffold)."""
+"""Temporal MaxRL extension helpers (research scaffold).
+
+This is a NumPy reference implementation for offline analysis utilities.
+Active training-time weighting is injected via bootstrap shim into
+`learning/train_jax_ppo.py`.
+"""
 
 from __future__ import annotations
 

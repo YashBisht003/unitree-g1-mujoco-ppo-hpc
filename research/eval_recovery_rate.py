@@ -8,9 +8,11 @@ import datetime as dt
 import json
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+from brax.training import checkpoint as brax_checkpoint
 from brax.training.agents.ppo import checkpoint as ppo_checkpoint
+from brax.training.agents.ppo import networks as ppo_networks
 import jax
 import numpy as np
 from mujoco_playground import registry
@@ -75,6 +77,36 @@ def _load_json_if_exists(path: Path) -> dict[str, Any]:
   if path.is_file():
     return json.loads(path.read_text(encoding="utf-8"))
   return {}
+
+
+def _load_policy_with_fallback(
+    ckpt_step: Path, deterministic: bool
+) -> Callable[[Any, Any], Any]:
+  """Loads PPO policy inference function across Brax API variants."""
+
+  load_policy_fn = getattr(ppo_checkpoint, "load_policy", None)
+  if callable(load_policy_fn):
+    return load_policy_fn(ckpt_step, deterministic=deterministic)
+
+  load_config_fn = getattr(ppo_checkpoint, "load_config", None)
+  load_params_fn = getattr(ppo_checkpoint, "load", None)
+  if not callable(load_config_fn) or not callable(load_params_fn):
+    raise RuntimeError(
+        "Unsupported Brax PPO checkpoint API: missing load_policy and "
+        "load/load_config fallback functions."
+    )
+
+  config = load_config_fn(ckpt_step)
+  params = load_params_fn(ckpt_step)
+
+  get_network_fn = getattr(ppo_checkpoint, "_get_ppo_network", None)
+  if callable(get_network_fn):
+    ppo_network = get_network_fn(config, ppo_networks.make_ppo_networks)
+  else:
+    ppo_network = brax_checkpoint.get_network(config, ppo_networks.make_ppo_networks)
+
+  make_inference_fn = ppo_networks.make_inference_fn(ppo_network)
+  return make_inference_fn(params, deterministic=deterministic)
 
 
 def _build_config_overrides(
@@ -161,8 +193,20 @@ def _evaluate_one_magnitude(
       state = v_step(state, action)
 
       done = np.asarray(state.done) > 0.5
-      push = np.asarray(state.info["push"])
-      push_now = np.linalg.norm(push, axis=-1) > 1e-6
+      push_vec = state.info.get("push", None) if hasattr(state.info, "get") else None
+      if push_vec is None:
+        # Some env variants do not expose push vectors in state.info.
+        # Fallback: treat this step as "post-push" so the evaluator remains usable.
+        push_now = np.ones((n,), dtype=bool)
+      else:
+        push = np.asarray(push_vec)
+        if push.ndim == 1:
+          if push.shape[0] == n:
+            push_now = np.abs(push) > 1e-6
+          else:
+            push_now = np.full((n,), np.linalg.norm(push) > 1e-6, dtype=bool)
+        else:
+          push_now = np.linalg.norm(push, axis=-1) > 1e-6
       new_push = (~pushed) & push_now
 
       pushed[new_push] = True
@@ -260,7 +304,7 @@ def main() -> None:
   )
 
   ckpt_step = _resolve_checkpoint_step(args.checkpoint_path)
-  policy_fn = ppo_checkpoint.load_policy(
+  policy_fn = _load_policy_with_fallback(
       ckpt_step,
       deterministic=args.deterministic,
   )

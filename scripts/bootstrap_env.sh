@@ -196,7 +196,7 @@ import sys
 
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-marker = "__codex_maxrl_scaffold_v4__"
+marker = "__codex_maxrl_scaffold_v5__"
 if marker in text:
   print("[bootstrap] MaxRL scaffold shim already present")
   raise SystemExit(0)
@@ -276,6 +276,8 @@ def _groupwise_temporal_weights(temporal_success, group_size: int):
         jp.ones_like(temporal_success) / float(batch),
     )
 
+  # Assumes contiguous scenario grouping in env batching:
+  # [0..group_size-1] = scenario 0, [group_size..2*group_size-1] = scenario 1, ...
   grouped = jp.reshape(temporal_success, (steps, -1, group_size))
   k = jp.sum(grouped, axis=2, keepdims=True)
   grouped_w = jp.where(
@@ -338,14 +340,13 @@ def _compute_ppo_loss_with_maxrl(
     # In G1 locomotion, termination tracks fall/unsafe episode end.
     rollout_success = 1.0 - jp.max(termination, axis=0)
     rollout_weights = _groupwise_binary_weights(rollout_success, group_size)
-    # Re-scale by batch-size so objective magnitude stays near PPO.
-    advantages = advantages * rollout_weights[None, :] * advantages.shape[1]
+    advantages = advantages * rollout_weights[None, :]
     maxrl_success_rate = jp.mean(rollout_success)
   elif adv_mode == "maxrl_temporal" and not _MAXRL_LOG_ONLY.value:
     # Temporal verifier: alive mask per (t, rollout).
     temporal_success = 1.0 - termination
     temporal_weights = _groupwise_temporal_weights(temporal_success, group_size)
-    advantages = advantages * temporal_weights * advantages.shape[1]
+    advantages = advantages * temporal_weights
     maxrl_success_rate = jp.mean(temporal_success)
   elif normalize_advantage:
     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
