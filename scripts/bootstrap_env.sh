@@ -196,7 +196,7 @@ import sys
 
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-marker = "__codex_maxrl_scaffold_v5__"
+marker = "__codex_maxrl_scaffold_v6__"
 if marker in text:
   print("[bootstrap] MaxRL scaffold shim already present")
   raise SystemExit(0)
@@ -237,29 +237,86 @@ _MAXRL_VERBOSE = flags.DEFINE_boolean(
     False,
     "Enable verbose MaxRL scaffold logging.",
 )
+_MAXRL_EPISODE_VERIFIER = flags.DEFINE_boolean(
+    "maxrl_episode_verifier",
+    True,
+    "Use episode_done-aware verifier for maxrl_binary (Option A).",
+)
 """
 flags_block = flags_block.replace("__MARKER__", marker)
 
 helpers_block = """
 # __MARKER__
-def _groupwise_binary_weights(success, group_size: int):
-  \"\"\"Computes per-rollout MaxRL weights (r_i / K) inside scenario groups.\"\"\"
+def _groupwise_binary_weights(success, group_size: int, valid=None):
+  \"\"\"Computes per-rollout MaxRL weights inside scenario groups.
+
+  Args:
+    success: shape [batch], in [0, 1], success indicator/rate.
+    group_size: scenario rollout group size.
+    valid: optional shape [batch], 1 where success is episode-level valid.
+      Invalid entries fall back to PPO weight=1.
+  \"\"\"
 
   batch = int(success.shape[0])
+  if valid is None:
+    valid = jp.ones_like(success)
+  else:
+    valid = valid.astype(success.dtype)
+
+  success = success * valid
   if group_size <= 0 or batch % group_size != 0:
     k = jp.sum(success)
-    # Graceful fallback: if all fail, use uniform PPO-style weighting.
-    return jp.where(
-        k > 0, success / (k + 1e-8), jp.ones_like(success) / float(batch)
+    v = jp.sum(valid)
+    maxrl_w = jp.where(
+        k > 0,
+        success / (k + 1e-8),
+        jp.where(v > 0, valid / (v + 1e-8), jp.zeros_like(success)),
     )
+    return jp.where(valid > 0, maxrl_w, jp.ones_like(success))
 
-  grouped = jp.reshape(success, (-1, group_size))
-  k = jp.sum(grouped, axis=1, keepdims=True)
-  # Graceful fallback: if an entire group fails, keep non-zero gradient signal.
-  grouped_w = jp.where(
-      k > 0, grouped / (k + 1e-8), jp.ones_like(grouped) / float(group_size)
+  grouped_s = jp.reshape(success, (-1, group_size))
+  grouped_v = jp.reshape(valid, (-1, group_size))
+  k = jp.sum(grouped_s, axis=1, keepdims=True)
+  v = jp.sum(grouped_v, axis=1, keepdims=True)
+  grouped_maxrl_w = jp.where(
+      k > 0,
+      grouped_s / (k + 1e-8),
+      jp.where(v > 0, grouped_v / (v + 1e-8), jp.zeros_like(grouped_s)),
   )
+  grouped_w = jp.where(grouped_v > 0, grouped_maxrl_w, jp.ones_like(grouped_s))
   return jp.reshape(grouped_w, (batch,))
+
+
+def _episode_success_from_episode_done(termination, episode_done):
+  \"\"\"Computes episode-level success from done events inside a chunk.
+
+  This makes MaxRL-binary align with full-episode outcome signals (Option A)
+  instead of only unroll-window termination.
+  \"\"\"
+
+  episode_done = episode_done.astype(termination.dtype)
+
+  def _scan_fn(carry, inputs):
+    ever_terminated = carry
+    term_t, done_t = inputs
+    ever_terminated = jp.maximum(ever_terminated, term_t)
+    success_t = (1.0 - ever_terminated) * done_t
+    # Start a fresh episode immediately after done.
+    ever_terminated = jp.where(done_t > 0, jp.zeros_like(ever_terminated), ever_terminated)
+    return ever_terminated, (done_t, success_t)
+
+  init_ever_terminated = jp.zeros_like(termination[0])
+  _, (done_hist, success_hist) = jax.lax.scan(
+      _scan_fn, init_ever_terminated, (termination, episode_done)
+  )
+  done_count = jp.sum(done_hist, axis=0)
+  success = jp.where(
+      done_count > 0,
+      jp.sum(success_hist, axis=0) / (done_count + 1e-8),
+      jp.zeros_like(done_count),
+  )
+  valid = (done_count > 0).astype(termination.dtype)
+  return success, valid
 
 
 def _groupwise_temporal_weights(temporal_success, group_size: int):
@@ -332,14 +389,24 @@ def _compute_ppo_loss_with_maxrl(
   )
 
   maxrl_success_rate = jp.array(0.0, dtype=rewards.dtype)
+  maxrl_valid_fraction = jp.array(1.0, dtype=rewards.dtype)
   adv_mode = _ADV_MODE.value
   group_size = int(_SCENARIO_GROUP_SIZE.value)
 
   if adv_mode == "maxrl_binary" and not _MAXRL_LOG_ONLY.value:
-    # Binary verifier: rollout succeeds iff no termination event happened.
-    # In G1 locomotion, termination tracks fall/unsafe episode end.
-    rollout_success = 1.0 - jp.max(termination, axis=0)
-    rollout_weights = _groupwise_binary_weights(rollout_success, group_size)
+    state_extras = data.extras["state_extras"]
+    if _MAXRL_EPISODE_VERIFIER.value and "episode_done" in state_extras:
+      rollout_success, rollout_valid = _episode_success_from_episode_done(
+          termination, state_extras["episode_done"]
+      )
+      rollout_weights = _groupwise_binary_weights(
+          rollout_success, group_size, rollout_valid
+      )
+      maxrl_valid_fraction = jp.mean(rollout_valid)
+    else:
+      # Fallback verifier when episode_done is unavailable.
+      rollout_success = 1.0 - jp.max(termination, axis=0)
+      rollout_weights = _groupwise_binary_weights(rollout_success, group_size)
     advantages = advantages * rollout_weights[None, :]
     maxrl_success_rate = jp.mean(rollout_success)
   elif adv_mode == "maxrl_temporal" and not _MAXRL_LOG_ONLY.value:
@@ -375,6 +442,8 @@ def _compute_ppo_loss_with_maxrl(
   }
   if adv_mode != "ppo":
     metrics["maxrl/success_rate"] = maxrl_success_rate
+    if adv_mode == "maxrl_binary":
+      metrics["maxrl/valid_fraction"] = maxrl_valid_fraction
   return total_loss, metrics
 
 
