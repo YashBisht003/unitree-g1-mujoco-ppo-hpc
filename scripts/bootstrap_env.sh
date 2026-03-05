@@ -547,8 +547,16 @@ _MAXRL_EPISODE_VERIFIER = flags.DEFINE_boolean(
       count=1,
   )
   if n == 0:
-    print("[bootstrap] MaxRL episode verifier flag insertion failed; skipping")
-    raise SystemExit(0)
+    # Fallback anchor for pre-existing scaffold layouts.
+    text, n2 = re.subn(
+        r'(_MAXRL_VERBOSE\s*=\s*flags\.DEFINE_boolean\([\s\S]*?\)\n)',
+        r"\1" + episode_flag_block + "\n",
+        text,
+        count=1,
+    )
+    if n2 == 0:
+      print("[bootstrap] MaxRL episode verifier flag insertion failed; skipping")
+      raise SystemExit(0)
 
 text, replaced_helpers = re.subn(
     r"\n# __codex_maxrl_scaffold_v[0-9A-Za-z_]+__\n(?:def _groupwise_binary_weights|def _log_maxrl_scaffold_config)[\s\S]*?\n\ndef main\(argv\):",
