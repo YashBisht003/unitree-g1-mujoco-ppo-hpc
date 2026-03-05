@@ -443,21 +443,25 @@ def _compute_ppo_loss_with_maxrl(
   push_mask_mode = _PUSH_ADV_MASK_MODE.value
   if push_mask_mode != "off":
     push_vec = state_extras["push"] if "push" in state_extras else None
-    if push_vec is not None:
-      push_mag = jp.linalg.norm(push_vec, axis=-1)
-      push_event = (push_mag > _PUSH_EVENT_EPS.value).astype(advantages.dtype)
-      post_push = (jp.cumsum(push_event, axis=0) > 0).astype(advantages.dtype)
-      if push_mask_mode == "post_push_soft":
-        pre_w = _PUSH_ADV_PRE_WEIGHT.value
-        adv_mask = pre_w + (1.0 - pre_w) * post_push
-      else:
-        adv_mask = post_push
-      # If a rollout chunk has no push event, keep PPO-style updates for it.
-      has_push = jp.max(post_push, axis=0, keepdims=True)
-      adv_mask = jp.where(has_push > 0, adv_mask, jp.ones_like(adv_mask))
-      advantages = advantages * adv_mask
-      push_mask_mean_weight = jp.mean(adv_mask)
-      push_mask_post_fraction = jp.mean(post_push)
+    if push_vec is None:
+      raise ValueError(
+          "push_adv_mask_mode requires state_extras['push'], but it is missing. "
+          "Ensure _install_push_mask_patch is active and env exposes state.info['push']."
+      )
+    push_mag = jp.linalg.norm(push_vec, axis=-1)
+    push_event = (push_mag > _PUSH_EVENT_EPS.value).astype(advantages.dtype)
+    post_push = (jp.cumsum(push_event, axis=0) > 0).astype(advantages.dtype)
+    if push_mask_mode == "post_push_soft":
+      pre_w = _PUSH_ADV_PRE_WEIGHT.value
+      adv_mask = pre_w + (1.0 - pre_w) * post_push
+    else:
+      adv_mask = post_push
+    # If a rollout chunk has no push event, keep PPO-style updates for it.
+    has_push = jp.max(post_push, axis=0, keepdims=True)
+    adv_mask = jp.where(has_push > 0, adv_mask, jp.ones_like(adv_mask))
+    advantages = advantages * adv_mask
+    push_mask_mean_weight = jp.mean(adv_mask)
+    push_mask_post_fraction = jp.mean(post_push)
 
   rho_s = jp.exp(target_action_log_probs - behaviour_action_log_probs)
   surrogate_loss1 = rho_s * advantages
