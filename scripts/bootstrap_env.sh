@@ -196,7 +196,7 @@ import sys
 
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-marker = "__codex_maxrl_scaffold_v6__"
+marker = "__codex_maxrl_scaffold_v7__"
 if marker in text:
   print("[bootstrap] MaxRL scaffold shim already present")
   raise SystemExit(0)
@@ -241,6 +241,22 @@ _MAXRL_EPISODE_VERIFIER = flags.DEFINE_boolean(
     "maxrl_episode_verifier",
     True,
     "Use episode_done-aware verifier for maxrl_binary (Option A).",
+)
+_PUSH_ADV_MASK_MODE = flags.DEFINE_enum(
+    "push_adv_mask_mode",
+    "off",
+    ["off", "post_push_soft", "post_push_hard"],
+    "Push-conditioned advantage masking mode.",
+)
+_PUSH_ADV_PRE_WEIGHT = flags.DEFINE_float(
+    "push_adv_pre_weight",
+    0.1,
+    "Pre-push weight used by post_push_soft masking.",
+)
+_PUSH_EVENT_EPS = flags.DEFINE_float(
+    "push_event_eps",
+    1e-6,
+    "Threshold on |push| for detecting push timesteps.",
 )
 """
 flags_block = flags_block.replace("__MARKER__", marker)
@@ -370,7 +386,8 @@ def _compute_ppo_loss_with_maxrl(
   bootstrap_value = value_apply(normalizer_params, params.value, terminal_obs)
 
   rewards = data.reward * reward_scaling
-  truncation = data.extras["state_extras"]["truncation"]
+  state_extras = data.extras["state_extras"]
+  truncation = state_extras["truncation"]
   termination = (1 - data.discount) * (1 - truncation)
 
   target_action_log_probs = parametric_action_distribution.log_prob(
@@ -390,11 +407,12 @@ def _compute_ppo_loss_with_maxrl(
 
   maxrl_success_rate = jp.array(0.0, dtype=rewards.dtype)
   maxrl_valid_fraction = jp.array(1.0, dtype=rewards.dtype)
+  push_mask_mean_weight = jp.array(1.0, dtype=rewards.dtype)
+  push_mask_post_fraction = jp.array(0.0, dtype=rewards.dtype)
   adv_mode = _ADV_MODE.value
   group_size = int(_SCENARIO_GROUP_SIZE.value)
 
   if adv_mode == "maxrl_binary" and not _MAXRL_LOG_ONLY.value:
-    state_extras = data.extras["state_extras"]
     if _MAXRL_EPISODE_VERIFIER.value and "episode_done" in state_extras:
       rollout_success, rollout_valid = _episode_success_from_episode_done(
           termination, state_extras["episode_done"]
@@ -422,6 +440,25 @@ def _compute_ppo_loss_with_maxrl(
     # Secondary stabilization after MaxRL weighting.
     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
+  push_mask_mode = _PUSH_ADV_MASK_MODE.value
+  if push_mask_mode != "off":
+    push_vec = state_extras["push"] if "push" in state_extras else None
+    if push_vec is not None:
+      push_mag = jp.linalg.norm(push_vec, axis=-1)
+      push_event = (push_mag > _PUSH_EVENT_EPS.value).astype(advantages.dtype)
+      post_push = (jp.cumsum(push_event, axis=0) > 0).astype(advantages.dtype)
+      if push_mask_mode == "post_push_soft":
+        pre_w = _PUSH_ADV_PRE_WEIGHT.value
+        adv_mask = pre_w + (1.0 - pre_w) * post_push
+      else:
+        adv_mask = post_push
+      # If a rollout chunk has no push event, keep PPO-style updates for it.
+      has_push = jp.max(post_push, axis=0, keepdims=True)
+      adv_mask = jp.where(has_push > 0, adv_mask, jp.ones_like(adv_mask))
+      advantages = advantages * adv_mask
+      push_mask_mean_weight = jp.mean(adv_mask)
+      push_mask_post_fraction = jp.mean(post_push)
+
   rho_s = jp.exp(target_action_log_probs - behaviour_action_log_probs)
   surrogate_loss1 = rho_s * advantages
   surrogate_loss2 = jp.clip(rho_s, 1 - clipping_epsilon, 1 + clipping_epsilon) * advantages
@@ -444,7 +481,40 @@ def _compute_ppo_loss_with_maxrl(
     metrics["maxrl/success_rate"] = maxrl_success_rate
     if adv_mode == "maxrl_binary":
       metrics["maxrl/valid_fraction"] = maxrl_valid_fraction
+  if _PUSH_ADV_MASK_MODE.value != "off":
+    metrics["push_mask/mean_weight"] = push_mask_mean_weight
+    metrics["push_mask/post_fraction"] = push_mask_post_fraction
   return total_loss, metrics
+
+
+def _install_push_mask_patch() -> None:
+  \"\"\"Ensures `push` is available in state_extras when masking is enabled.\"\"\"
+
+  mode = _PUSH_ADV_MASK_MODE.value
+  if mode == "off":
+    return
+
+  from brax.training import acting as brax_acting
+
+  current = brax_acting.generate_unroll
+  if getattr(current, "__name__", "") == "_generate_unroll_with_push":
+    return
+
+  def _generate_unroll_with_push(
+      env, env_state, policy, key, unroll_length, extra_fields=()
+  ):
+    extras = tuple(extra_fields) if extra_fields is not None else ()
+    if "push" not in extras:
+      extras = extras + ("push",)
+    return current(
+        env, env_state, policy, key, unroll_length, extra_fields=extras
+    )
+
+  brax_acting.generate_unroll = _generate_unroll_with_push
+  print(
+      "[push-mask] requested `push` in state_extras "
+      f"(mode={mode}, pre_weight={_PUSH_ADV_PRE_WEIGHT.value})."
+  )
 
 
 def _install_maxrl_loss_patch() -> None:
@@ -508,6 +578,13 @@ def _log_maxrl_scaffold_config(num_envs: int) -> None:
   if _MAXRL_LOG_ONLY.value:
     print("[maxrl] maxrl_log_only=True (diagnostics only).")
 
+  if _PUSH_ADV_MASK_MODE.value != "off":
+    print(
+        "[push-mask] mode="
+        f"{_PUSH_ADV_MASK_MODE.value}, pre_weight={_PUSH_ADV_PRE_WEIGHT.value}, "
+        f"event_eps={_PUSH_EVENT_EPS.value}"
+    )
+
   if _MAXRL_VERBOSE.value:
     print(
         "[maxrl] verbose: "
@@ -558,6 +635,82 @@ _MAXRL_EPISODE_VERIFIER = flags.DEFINE_boolean(
       print("[bootstrap] MaxRL episode verifier flag insertion failed; skipping")
       raise SystemExit(0)
 
+if "_PUSH_ADV_MASK_MODE = flags.DEFINE_enum(" not in text:
+  push_mask_mode_block = """
+_PUSH_ADV_MASK_MODE = flags.DEFINE_enum(
+    "push_adv_mask_mode",
+    "off",
+    ["off", "post_push_soft", "post_push_hard"],
+    "Push-conditioned advantage masking mode.",
+)
+"""
+  text, n = re.subn(
+      r"\n\ndef get_rl_config\(",
+      "\n" + push_mask_mode_block + "\n\ndef get_rl_config(",
+      text,
+      count=1,
+  )
+  if n == 0:
+    text, n2 = re.subn(
+        r'(_MAXRL_EPISODE_VERIFIER\s*=\s*flags\.DEFINE_boolean\([\s\S]*?\)\n)',
+        r"\1" + push_mask_mode_block + "\n",
+        text,
+        count=1,
+    )
+    if n2 == 0:
+      print("[bootstrap] push_adv_mask_mode flag insertion failed; skipping")
+      raise SystemExit(0)
+
+if "_PUSH_ADV_PRE_WEIGHT = flags.DEFINE_float(" not in text:
+  push_pre_weight_block = """
+_PUSH_ADV_PRE_WEIGHT = flags.DEFINE_float(
+    "push_adv_pre_weight",
+    0.1,
+    "Pre-push weight used by post_push_soft masking.",
+)
+"""
+  text, n = re.subn(
+      r"\n\ndef get_rl_config\(",
+      "\n" + push_pre_weight_block + "\n\ndef get_rl_config(",
+      text,
+      count=1,
+  )
+  if n == 0:
+    text, n2 = re.subn(
+        r'(_PUSH_ADV_MASK_MODE\s*=\s*flags\.DEFINE_enum\([\s\S]*?\)\n)',
+        r"\1" + push_pre_weight_block + "\n",
+        text,
+        count=1,
+    )
+    if n2 == 0:
+      print("[bootstrap] push_adv_pre_weight flag insertion failed; skipping")
+      raise SystemExit(0)
+
+if "_PUSH_EVENT_EPS = flags.DEFINE_float(" not in text:
+  push_event_eps_block = """
+_PUSH_EVENT_EPS = flags.DEFINE_float(
+    "push_event_eps",
+    1e-6,
+    "Threshold on |push| for detecting push timesteps.",
+)
+"""
+  text, n = re.subn(
+      r"\n\ndef get_rl_config\(",
+      "\n" + push_event_eps_block + "\n\ndef get_rl_config(",
+      text,
+      count=1,
+  )
+  if n == 0:
+    text, n2 = re.subn(
+        r'(_PUSH_ADV_PRE_WEIGHT\s*=\s*flags\.DEFINE_float\([\s\S]*?\)\n)',
+        r"\1" + push_event_eps_block + "\n",
+        text,
+        count=1,
+    )
+    if n2 == 0:
+      print("[bootstrap] push_event_eps flag insertion failed; skipping")
+      raise SystemExit(0)
+
 text, replaced_helpers = re.subn(
     r"\n# __codex_maxrl_scaffold_v[0-9A-Za-z_]+__\n(?:def _groupwise_binary_weights|def _log_maxrl_scaffold_config)[\s\S]*?\n\ndef main\(argv\):",
     "\n\n" + helpers_block + "\n\ndef main(argv):",
@@ -587,6 +740,7 @@ if replaced_helpers == 0 and "def _groupwise_binary_weights(" not in text and "d
 call_anchor = '  print(f"PPO Training Parameters:\\n{ppo_params}")\n'
 call_line = "  _log_maxrl_scaffold_config(int(ppo_params.num_envs))\n"
 install_line = "  _install_maxrl_loss_patch()\n"
+install_push_line = "  _install_push_mask_patch()\n"
 if call_line not in text:
   if call_anchor in text:
     text = text.replace(call_anchor, call_anchor + call_line, 1)
@@ -599,6 +753,15 @@ if install_line not in text:
     text = text.replace(call_line, call_line + install_line, 1)
   else:
     print("[bootstrap] MaxRL install call anchor missing; skipping")
+    raise SystemExit(0)
+
+if install_push_line not in text:
+  if install_line in text:
+    text = text.replace(install_line, install_line + install_push_line, 1)
+  elif call_line in text:
+    text = text.replace(call_line, call_line + install_push_line, 1)
+  else:
+    print("[bootstrap] push-mask install call anchor missing; skipping")
     raise SystemExit(0)
 
 path.write_text(text)

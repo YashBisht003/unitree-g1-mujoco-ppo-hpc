@@ -60,6 +60,9 @@ ADV_MODE="${ADV_MODE:-}"  # optional explicit override: ppo|maxrl_binary|maxrl_t
 SCENARIO_GROUP_SIZE="${SCENARIO_GROUP_SIZE:-8}"
 MAXRL_SCENARIO_KEY="${MAXRL_SCENARIO_KEY:-push_cfg}"
 MAXRL_VERBOSE="${MAXRL_VERBOSE:-1}"
+PUSH_ADV_MASK_MODE="${PUSH_ADV_MASK_MODE:-off}"   # off|post_push_soft|post_push_hard
+PUSH_ADV_PRE_WEIGHT="${PUSH_ADV_PRE_WEIGHT:-0.1}" # used by post_push_soft
+PUSH_EVENT_EPS="${PUSH_EVENT_EPS:-1e-6}"
 
 case "${MODE}" in
   ppo_dense)
@@ -126,6 +129,9 @@ CMD=(
   --maxrl_log_only="${MAXRL_LOG_ONLY_BOOL}"
   --maxrl_scenario_key="${MAXRL_SCENARIO_KEY}"
   --maxrl_verbose="${MAXRL_VERBOSE_BOOL}"
+  --push_adv_mask_mode="${PUSH_ADV_MASK_MODE}"
+  --push_adv_pre_weight="${PUSH_ADV_PRE_WEIGHT}"
+  --push_event_eps="${PUSH_EVENT_EPS}"
   --use_tb="${TB_FLAG}"
   --use_wandb="${WANDB_FLAG}"
 )
@@ -156,6 +162,6 @@ if [ -d "${ROUGH_CKPT}" ]; then
 fi
 CMD+=(--load_checkpoint_path="${CKPT_ARG}")
 
-echo "[train-push] mode=${MODE} adv_mode=${ADV_MODE_FLAG} scenario_group_size=${SCENARIO_GROUP_SIZE}"
+echo "[train-push] mode=${MODE} adv_mode=${ADV_MODE_FLAG} scenario_group_size=${SCENARIO_GROUP_SIZE} push_adv_mask_mode=${PUSH_ADV_MASK_MODE}"
 echo "[train-push] running: ${CMD[*]}"
 "${CMD[@]}"
