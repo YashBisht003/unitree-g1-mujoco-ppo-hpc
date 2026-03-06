@@ -78,6 +78,16 @@ PUSH_ADV_PRE_WEIGHT="${PUSH_ADV_PRE_WEIGHT:-0.1}" # used by post_push_soft
 PUSH_EVENT_EPS="${PUSH_EVENT_EPS:-1e-6}"
 PUSH_ENTROPY_MODE="${PUSH_ENTROPY_MODE:-off}"     # off|post_push_additive
 PUSH_ENTROPY_DELTA="${PUSH_ENTROPY_DELTA:-0.0}"
+PUSH_REWARD_MODE="${PUSH_REWARD_MODE:-off}"  # off|recovery_window
+RECOVERY_WINDOW_K="${RECOVERY_WINDOW_K:-60}"
+RECOVERY_WINDOW_TRACKING_SCALE="${RECOVERY_WINDOW_TRACKING_SCALE:-0.2}"
+RECOVERY_OMEGA_WEIGHT="${RECOVERY_OMEGA_WEIGHT:-0.05}"
+RECOVERY_BONUS="${RECOVERY_BONUS:-8.0}"
+RECOVERY_BONUS_STABILITY_STEPS="${RECOVERY_BONUS_STABILITY_STEPS:-10}"
+RECOVERY_BONUS_DELAY_STEPS="${RECOVERY_BONUS_DELAY_STEPS:-10}"
+RECOVERY_STABLE_LIN_MIN="${RECOVERY_STABLE_LIN_MIN:-0.7}"
+RECOVERY_STABLE_ANG_MIN="${RECOVERY_STABLE_ANG_MIN:-0.7}"
+CAPTURE_POINT_LOG="${CAPTURE_POINT_LOG:-0}"
 
 case "${MODE}" in
   ppo_dense)
@@ -123,6 +133,32 @@ if [ "${USE_TB}" = "1" ]; then TB_FLAG="True"; else TB_FLAG="False"; fi
 if [ "${USE_WANDB}" = "1" ]; then WANDB_FLAG="True"; else WANDB_FLAG="False"; fi
 if [ "${MAXRL_LOG_ONLY_FLAG}" = "1" ]; then MAXRL_LOG_ONLY_BOOL="True"; else MAXRL_LOG_ONLY_BOOL="False"; fi
 if [ "${MAXRL_VERBOSE}" = "1" ]; then MAXRL_VERBOSE_BOOL="True"; else MAXRL_VERBOSE_BOOL="False"; fi
+
+# Build playground overrides for recovery-window reward redesign.
+if [ "${PUSH_REWARD_MODE}" != "off" ]; then
+  RECOVERY_OVERRIDES_JSON="$("${VENV_DIR}/bin/python" -B - <<PY
+import json
+base = {}
+if "${PLAYGROUND_CONFIG_OVERRIDES:-}":
+  base = json.loads("""${PLAYGROUND_CONFIG_OVERRIDES:-}""")
+base.setdefault("recovery_reward", {})
+base["recovery_reward"].update({
+  "mode": "${PUSH_REWARD_MODE}",
+  "window_steps": int("${RECOVERY_WINDOW_K}"),
+  "tracking_scale": float("${RECOVERY_WINDOW_TRACKING_SCALE}"),
+  "omega_weight": float("${RECOVERY_OMEGA_WEIGHT}"),
+  "bonus": float("${RECOVERY_BONUS}"),
+  "bonus_stability_steps": int("${RECOVERY_BONUS_STABILITY_STEPS}"),
+  "bonus_delay_steps": int("${RECOVERY_BONUS_DELAY_STEPS}"),
+  "stable_lin_tracking_min": float("${RECOVERY_STABLE_LIN_MIN}"),
+  "stable_ang_tracking_min": float("${RECOVERY_STABLE_ANG_MIN}"),
+  "capture_point_log": bool(int("${CAPTURE_POINT_LOG}")),
+})
+print(json.dumps(base, separators=(",", ":")))
+PY
+)"
+  PLAYGROUND_CONFIG_OVERRIDES="${RECOVERY_OVERRIDES_JSON}"
+fi
 
 CMD=(
   python learning/train_jax_ppo.py
@@ -180,5 +216,8 @@ fi
 CMD+=(--load_checkpoint_path="${CKPT_ARG}")
 
 echo "[train-push] mode=${MODE} adv_mode=${ADV_MODE_FLAG} scenario_group_size=${SCENARIO_GROUP_SIZE} push_adv_mask_mode=${PUSH_ADV_MASK_MODE} push_entropy_mode=${PUSH_ENTROPY_MODE}"
+if [ -n "${PLAYGROUND_CONFIG_OVERRIDES:-}" ]; then
+  echo "[train-push] playground_config_overrides=${PLAYGROUND_CONFIG_OVERRIDES}"
+fi
 echo "[train-push] running: ${CMD[*]}"
 "${CMD[@]}"

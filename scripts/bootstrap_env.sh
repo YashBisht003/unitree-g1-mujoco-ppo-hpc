@@ -182,6 +182,355 @@ else:
 PY
 }
 
+apply_g1_recovery_reward_shim() {
+  local target="${PLAYGROUND_DIR}/mujoco_playground/_src/locomotion/g1/joystick.py"
+  if [ ! -f "${target}" ]; then
+    echo "[bootstrap] warning: ${target} not found; skipping G1 recovery-reward shim."
+    return 0
+  fi
+
+  "${PYTHON_BIN}" - "${target}" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+marker = "__codex_g1_recovery_reward_v1__"
+if marker in text:
+  print("[bootstrap] G1 recovery-reward shim already present")
+  raise SystemExit(0)
+
+if "class Joystick(g1_base.G1Env):" not in text:
+  print("[bootstrap] G1 joystick layout not recognized; skipping recovery-reward shim")
+  raise SystemExit(0)
+
+if "recovery_ang_mom=1.0" not in text:
+  anchor = "              tracking_ang_vel=0.75,\n"
+  if anchor not in text:
+    print("[bootstrap] failed to insert recovery scales; skipping")
+    raise SystemExit(0)
+  text = text.replace(
+      anchor,
+      anchor
+      + "              recovery_ang_mom=1.0,\n"
+      + "              recovery_bonus=1.0,\n",
+      1,
+  )
+
+if "recovery_reward=config_dict.create(" not in text:
+  recovery_block = """
+      recovery_reward=config_dict.create(
+          mode="off",  # off|recovery_window
+          window_steps=60,
+          tracking_scale=0.2,
+          omega_weight=0.05,
+          bonus=8.0,
+          bonus_stability_steps=10,
+          bonus_delay_steps=10,
+          stable_lin_tracking_min=0.7,
+          stable_ang_tracking_min=0.7,
+          capture_point_log=False,
+      ),
+"""
+  text, n = re.subn(
+      r'(\s+push_config=config_dict\.create\(\n\s+enable=True,\n\s+interval_range=\[[^\]]+\],\n\s+magnitude_range=\[[^\]]+\],\n\s+\),\n)',
+      r"\1" + recovery_block,
+      text,
+      count=1,
+  )
+  if n == 0:
+    print("[bootstrap] failed to insert recovery_reward config; skipping")
+    raise SystemExit(0)
+
+if '"recovery_countdown"' not in text:
+  info_anchor = '        "push_interval_steps": push_interval_steps,\n'
+  info_insert = (
+      '        "push_interval_steps": push_interval_steps,\n'
+      '        "recovery_countdown": jp.array(0, dtype=jp.int32),\n'
+      '        "recovery_stable_steps": jp.array(0, dtype=jp.int32),\n'
+      '        "recovery_survived": jp.array(1.0),\n'
+      '        "recovery_bonus_flag": jp.array(0.0),\n'
+      '        "in_recovery_window": jp.array(0.0),\n'
+      '        "cp_pending_steps": jp.array(0, dtype=jp.int32),\n'
+      '        "cp_valid": jp.array(0.0),\n'
+      '        "cp_xy_norm": jp.array(0.0),\n'
+      '        "cp_fail_window": jp.array(0.0),\n'
+  )
+  if info_anchor not in text:
+    print("[bootstrap] failed to insert recovery info fields; skipping")
+    raise SystemExit(0)
+  text = text.replace(info_anchor, info_insert, 1)
+
+if "push_event = jp.linalg.norm(push) > 0" not in text:
+  push_anchor = "    push *= self._config.push_config.enable\n"
+  if push_anchor not in text:
+    print("[bootstrap] failed to insert push_event marker; skipping")
+    raise SystemExit(0)
+  text = text.replace(
+      push_anchor,
+      push_anchor + "    push_event = jp.linalg.norm(push) > 0\n",
+      1,
+  )
+
+old_block = """    done = self._get_termination(data)
+
+    rewards = self._get_reward(
+        data, action, state.info, state.metrics, done, first_contact, contact
+    )
+"""
+new_block = """    done = self._get_termination(data)
+
+    rec_cfg = self._config.recovery_reward
+    recovery_enabled = rec_cfg.mode == "recovery_window"
+    total_recovery_steps = rec_cfg.window_steps + rec_cfg.bonus_delay_steps
+    prev_countdown = state.info["recovery_countdown"]
+    recovery_countdown = jp.where(
+        recovery_enabled & push_event,
+        total_recovery_steps,
+        jp.maximum(prev_countdown - 1, 0),
+    )
+    in_recovery_window = recovery_enabled & (
+        recovery_countdown > rec_cfg.bonus_delay_steps
+    )
+
+    lin_track_for_bonus = self._reward_tracking_lin_vel(
+        state.info["command"], self.get_local_linvel(data, "pelvis")
+    )
+    ang_track_for_bonus = self._reward_tracking_ang_vel(
+        state.info["command"], self.get_gyro(data, "pelvis")
+    )
+    stable_step = (
+        (lin_track_for_bonus >= rec_cfg.stable_lin_tracking_min)
+        & (ang_track_for_bonus >= rec_cfg.stable_ang_tracking_min)
+        & (~done)
+    )
+    bonus_phase = recovery_enabled & (recovery_countdown > 0) & (
+        recovery_countdown <= rec_cfg.bonus_delay_steps
+    )
+
+    recovery_survived = jp.where(
+        recovery_enabled & push_event,
+        jp.array(1.0),
+        state.info["recovery_survived"],
+    )
+    recovery_survived = jp.where(
+        recovery_enabled & (recovery_countdown > 0),
+        recovery_survived * (1.0 - done.astype(recovery_survived.dtype)),
+        recovery_survived,
+    )
+    recovery_stable_steps = jp.where(
+        recovery_enabled & push_event,
+        jp.array(0, dtype=jp.int32),
+        state.info["recovery_stable_steps"],
+    )
+    recovery_stable_steps = jp.where(
+        bonus_phase & stable_step,
+        recovery_stable_steps + 1,
+        recovery_stable_steps,
+    )
+    recovery_bonus_flag = (
+        recovery_enabled
+        & (recovery_countdown == 1)
+        & (recovery_survived > 0.5)
+        & (recovery_stable_steps >= rec_cfg.bonus_stability_steps)
+    )
+
+    cp_log_enabled = recovery_enabled & rec_cfg.capture_point_log
+    cp_omega0 = jp.sqrt(
+        9.81 / jp.maximum(0.2, self._config.reward_config.base_height_target)
+    )
+    cp_xy = data.qpos[0:2] + data.qvel[0:2] / cp_omega0
+    cp_norm = jp.linalg.norm(cp_xy)
+    cp_pending = jp.where(
+        cp_log_enabled & push_event,
+        jp.array(5, dtype=jp.int32),
+        state.info["cp_pending_steps"],
+    )
+    cp_capture_now = cp_log_enabled & (cp_pending == 1) & (~done)
+    cp_valid = jp.where(
+        cp_log_enabled & push_event,
+        jp.array(0.0),
+        state.info["cp_valid"],
+    )
+    cp_valid = jp.where(cp_capture_now, jp.array(1.0), cp_valid)
+    cp_xy_norm = jp.where(cp_capture_now, cp_norm, state.info["cp_xy_norm"])
+    cp_pending = jp.where(
+        cp_log_enabled & (cp_pending > 0) & (~done), cp_pending - 1, cp_pending
+    )
+    cp_pending = jp.where(done, jp.array(0, dtype=jp.int32), cp_pending)
+    cp_fail_window = jp.where(
+        cp_log_enabled & done & (recovery_countdown > 0) & (cp_valid > 0.5),
+        jp.array(1.0),
+        jp.array(0.0),
+    )
+
+    state.info["recovery_countdown"] = recovery_countdown
+    state.info["in_recovery_window"] = in_recovery_window.astype(jp.float32)
+    state.info["recovery_survived"] = recovery_survived
+    state.info["recovery_stable_steps"] = recovery_stable_steps
+    state.info["recovery_bonus_flag"] = recovery_bonus_flag.astype(jp.float32)
+    state.info["cp_pending_steps"] = cp_pending
+    state.info["cp_valid"] = cp_valid
+    state.info["cp_xy_norm"] = cp_xy_norm
+    state.info["cp_fail_window"] = cp_fail_window
+
+    rewards = self._get_reward(
+        data, action, state.info, state.metrics, done, first_contact, contact
+    )
+"""
+if old_block in text:
+  text = text.replace(old_block, new_block, 1)
+else:
+  print("[bootstrap] failed to patch step recovery logic; skipping")
+  raise SystemExit(0)
+
+reward_start = text.find("  def _get_reward(")
+reward_end = text.find("  def _cost_contact_force(", reward_start)
+if reward_start == -1 or reward_end == -1:
+  print("[bootstrap] failed to locate _get_reward for patching; skipping")
+  raise SystemExit(0)
+
+new_reward_fn = '''
+  def _get_reward(
+      self,
+      data: mjx.Data,
+      action: jax.Array,
+      info: dict[str, Any],
+      metrics: dict[str, Any],
+      done: jax.Array,
+      first_contact: jax.Array,
+      contact: jax.Array,
+  ) -> dict[str, jax.Array]:
+    del metrics  # Unused.
+    rewards = {
+        # Tracking rewards.
+        "tracking_lin_vel": self._reward_tracking_lin_vel(
+            info["command"], self.get_local_linvel(data, "pelvis")
+        ),
+        "tracking_ang_vel": self._reward_tracking_ang_vel(
+            info["command"], self.get_gyro(data, "pelvis")
+        ),
+        # Base-related rewards.
+        "lin_vel_z": self._cost_lin_vel_z(
+            self.get_global_linvel(data, "pelvis"),
+            self.get_global_linvel(data, "torso"),
+        ),
+        "ang_vel_xy": self._cost_ang_vel_xy(
+            self.get_global_angvel(data, "torso")
+        ),
+        "orientation": self._cost_orientation(self.get_gravity(data, "torso")),
+        "base_height": self._cost_base_height(data.qpos[2]),
+        # Energy related rewards.
+        "torques": self._cost_torques(data.actuator_force),
+        "action_rate": self._cost_action_rate(
+            action, info["last_act"], info["last_last_act"]
+        ),
+        "energy": self._cost_energy(data.qvel[6:], data.actuator_force),
+        "dof_acc": self._cost_dof_acc(data.qacc[6:]),
+        # Feet related rewards.
+        "feet_slip": self._cost_feet_slip(data, contact, info),
+        "feet_clearance": self._cost_feet_clearance(data, info),
+        "feet_height": self._cost_feet_height(
+            info["swing_peak"], first_contact, info
+        ),
+        "feet_air_time": self._reward_feet_air_time(
+            info["feet_air_time"], first_contact, info["command"]
+        ),
+        "feet_phase": self._reward_feet_phase(
+            data,
+            info["phase"],
+            self._config.reward_config.max_foot_height,
+            info["command"],
+        ),
+        # Other rewards.
+        "alive": self._reward_alive(),
+        "termination": self._cost_termination(done),
+        "stand_still": self._cost_stand_still(info["command"], data.qpos[7:]),
+        "collision": self._cost_collision(data),
+        "contact_force": self._cost_contact_force(data),
+        # Pose related rewards.
+        "joint_deviation_hip": self._cost_joint_deviation_hip(
+            data.qpos[7:], info["command"]
+        ),
+        "joint_deviation_knee": self._cost_joint_deviation_knee(data.qpos[7:]),
+        "dof_pos_limits": self._cost_joint_pos_limits(data.qpos[7:]),
+        "pose": self._cost_pose(data.qpos[7:]),
+    }
+
+    if self._config.recovery_reward.mode == "recovery_window":
+      in_window = info["in_recovery_window"] > 0.5
+      track_scale = self._config.recovery_reward.tracking_scale
+      rewards["tracking_lin_vel"] = jp.where(
+          in_window,
+          rewards["tracking_lin_vel"] * track_scale,
+          rewards["tracking_lin_vel"],
+      )
+      rewards["tracking_ang_vel"] = jp.where(
+          in_window,
+          rewards["tracking_ang_vel"] * track_scale,
+          rewards["tracking_ang_vel"],
+      )
+      rewards["recovery_ang_mom"] = jp.where(
+          in_window,
+          -self._config.recovery_reward.omega_weight
+          * self._cost_ang_vel_xy(self.get_global_angvel(data, "torso")),
+          jp.array(0.0),
+      )
+      rewards["recovery_bonus"] = (
+          self._config.recovery_reward.bonus * info["recovery_bonus_flag"]
+      )
+    else:
+      rewards["recovery_ang_mom"] = jp.array(0.0)
+      rewards["recovery_bonus"] = jp.array(0.0)
+    return rewards
+
+'''
+text = text[:reward_start] + new_reward_fn + text[reward_end:]
+
+metrics_anchor = '''    for k, v in rewards.items():
+      state.metrics[f"reward/{k}"] = v
+    state.metrics["swing_peak"] = jp.mean(state.info["swing_peak"])
+'''
+metrics_insert = '''    for k, v in rewards.items():
+      state.metrics[f"reward/{k}"] = v
+    state.metrics["swing_peak"] = jp.mean(state.info["swing_peak"])
+    state.metrics["diagnostics/recovery_countdown"] = state.info[
+        "recovery_countdown"
+    ].astype(reward.dtype)
+    state.metrics["diagnostics/in_recovery_window"] = state.info[
+        "in_recovery_window"
+    ].astype(reward.dtype)
+    state.metrics["diagnostics/recovery_bonus_flag"] = state.info[
+        "recovery_bonus_flag"
+    ].astype(reward.dtype)
+    state.metrics["diagnostics/cp_valid"] = state.info["cp_valid"].astype(
+        reward.dtype
+    )
+    state.metrics["diagnostics/cp_xy_norm"] = state.info["cp_xy_norm"].astype(
+        reward.dtype
+    )
+    state.metrics["diagnostics/cp_fail_window"] = state.info[
+        "cp_fail_window"
+    ].astype(reward.dtype)
+'''
+if "diagnostics/recovery_countdown" not in text:
+  if metrics_anchor not in text:
+    print("[bootstrap] failed to insert recovery diagnostics metrics; skipping")
+    raise SystemExit(0)
+  text = text.replace(metrics_anchor, metrics_insert, 1)
+
+text = text.replace(
+    "class Joystick(g1_base.G1Env):",
+    f"# {marker}\nclass Joystick(g1_base.G1Env):",
+    1,
+)
+
+path.write_text(text)
+print(f"[bootstrap] installed G1 recovery-reward shim at {path}")
+PY
+}
+
 apply_maxrl_scaffold_shim() {
   local target="${PLAYGROUND_DIR}/learning/train_jax_ppo.py"
   if [ ! -f "${target}" ]; then
@@ -196,7 +545,7 @@ import sys
 
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-marker = "__codex_maxrl_scaffold_v8__"
+marker = "__codex_maxrl_scaffold_v9__"
 if marker in text:
   print("[bootstrap] MaxRL scaffold shim already present")
   raise SystemExit(0)
@@ -269,11 +618,91 @@ _PUSH_ENTROPY_DELTA = flags.DEFINE_float(
     0.0,
     "Additional entropy coefficient on post-push timesteps (additive).",
 )
+_PUSH_REWARD_MODE = flags.DEFINE_enum(
+    "push_reward_mode",
+    "off",
+    ["off", "recovery_window"],
+    "Push-conditioned reward redesign mode.",
+)
+_RECOVERY_WINDOW_K = flags.DEFINE_integer(
+    "recovery_window_k",
+    60,
+    "Recovery-window length in env steps.",
+)
+_RECOVERY_WINDOW_TRACKING_SCALE = flags.DEFINE_float(
+    "recovery_window_tracking_scale",
+    0.2,
+    "Tracking reward scale inside recovery window.",
+)
+_RECOVERY_OMEGA_WEIGHT = flags.DEFINE_float(
+    "recovery_omega_weight",
+    0.05,
+    "Post-push angular momentum regularization weight.",
+)
+_RECOVERY_BONUS = flags.DEFINE_float(
+    "recovery_bonus",
+    8.0,
+    "Sparse bonus for stable recovery after window end.",
+)
+_RECOVERY_BONUS_STABILITY_STEPS = flags.DEFINE_integer(
+    "recovery_bonus_stability_steps",
+    10,
+    "Required stable steps before recovery bonus can trigger.",
+)
+_RECOVERY_BONUS_DELAY_STEPS = flags.DEFINE_integer(
+    "recovery_bonus_delay_steps",
+    10,
+    "Delay after recovery window before bonus trigger check.",
+)
+_RECOVERY_STABLE_LIN_MIN = flags.DEFINE_float(
+    "recovery_stable_lin_min",
+    0.7,
+    "Minimum linear tracking score for a step to count as stable.",
+)
+_RECOVERY_STABLE_ANG_MIN = flags.DEFINE_float(
+    "recovery_stable_ang_min",
+    0.7,
+    "Minimum angular tracking score for a step to count as stable.",
+)
+_CAPTURE_POINT_LOG = flags.DEFINE_boolean(
+    "capture_point_log",
+    False,
+    "Enable capture-point proxy logging diagnostics.",
+)
 """
 flags_block = flags_block.replace("__MARKER__", marker)
 
 helpers_block = """
 # __MARKER__
+def _merge_overrides(dst, src):
+  out = dict(dst)
+  for k, v in src.items():
+    if isinstance(v, dict) and isinstance(out.get(k), dict):
+      out[k] = _merge_overrides(out[k], v)
+    else:
+      out[k] = v
+  return out
+
+
+def _build_recovery_reward_overrides():
+  if _PUSH_REWARD_MODE.value == "off":
+    return {}
+  return {
+      "recovery_reward": {
+          "mode": _PUSH_REWARD_MODE.value,
+          "window_steps": int(_RECOVERY_WINDOW_K.value),
+          "tracking_scale": float(_RECOVERY_WINDOW_TRACKING_SCALE.value),
+          "omega_weight": float(_RECOVERY_OMEGA_WEIGHT.value),
+          "bonus": float(_RECOVERY_BONUS.value),
+          "bonus_stability_steps": int(_RECOVERY_BONUS_STABILITY_STEPS.value),
+          "bonus_delay_steps": int(_RECOVERY_BONUS_DELAY_STEPS.value),
+          "stable_lin_tracking_min": float(_RECOVERY_STABLE_LIN_MIN.value),
+          "stable_ang_tracking_min": float(_RECOVERY_STABLE_ANG_MIN.value),
+          "capture_point_log": bool(_CAPTURE_POINT_LOG.value),
+      }
+  }
+
+
 def _groupwise_binary_weights(success, group_size: int, valid=None):
   \"\"\"Computes per-rollout MaxRL weights inside scenario groups.
 
@@ -640,6 +1069,16 @@ def _log_maxrl_scaffold_config(num_envs: int) -> None:
         f"{_PUSH_ENTROPY_MODE.value}, delta={_PUSH_ENTROPY_DELTA.value}, "
         f"event_eps={_PUSH_EVENT_EPS.value}"
     )
+  if _PUSH_REWARD_MODE.value != "off":
+    print(
+        "[push-reward] mode="
+        f"{_PUSH_REWARD_MODE.value}, K={_RECOVERY_WINDOW_K.value}, "
+        f"tracking_scale={_RECOVERY_WINDOW_TRACKING_SCALE.value}, "
+        f"omega_w={_RECOVERY_OMEGA_WEIGHT.value}, bonus={_RECOVERY_BONUS.value}, "
+        f"stability_steps={_RECOVERY_BONUS_STABILITY_STEPS.value}, "
+        f"bonus_delay={_RECOVERY_BONUS_DELAY_STEPS.value}, "
+        f"cp_log={_CAPTURE_POINT_LOG.value}"
+    )
 
   if _MAXRL_VERBOSE.value:
     print(
@@ -664,6 +1103,31 @@ if "_ADV_MODE = flags.DEFINE_enum(" not in text:
   if n == 0:
     print("[bootstrap] MaxRL scaffold flags insertion failed; skipping")
     raise SystemExit(0)
+
+if "_PLAYGROUND_CONFIG_OVERRIDES = flags.DEFINE_string(" not in text:
+  playground_overrides_flag = """
+_PLAYGROUND_CONFIG_OVERRIDES = flags.DEFINE_string(
+    "playground_config_overrides",
+    None,
+    "Overrides for the playground env config.",
+)
+"""
+  text, n = re.subn(
+      r'(_IMPL\s*=\s*flags\.DEFINE_enum\([\s\S]*?\)\n)',
+      r"\1" + playground_overrides_flag + "\n",
+      text,
+      count=1,
+  )
+  if n == 0:
+    text, n2 = re.subn(
+        r"\n\ndef get_rl_config\(",
+        "\n" + playground_overrides_flag + "\n\ndef get_rl_config(",
+        text,
+        count=1,
+    )
+    if n2 == 0:
+      print("[bootstrap] playground_config_overrides flag insertion failed; skipping")
+      raise SystemExit(0)
 
 if "_MAXRL_EPISODE_VERIFIER = flags.DEFINE_boolean(" not in text:
   episode_flag_block = """
@@ -818,8 +1282,93 @@ _PUSH_ENTROPY_DELTA = flags.DEFINE_float(
       print("[bootstrap] push_entropy_delta flag insertion failed; skipping")
       raise SystemExit(0)
 
+if "_PUSH_REWARD_MODE = flags.DEFINE_enum(" not in text:
+  recovery_reward_flags_block = """
+_PUSH_REWARD_MODE = flags.DEFINE_enum(
+    "push_reward_mode",
+    "off",
+    ["off", "recovery_window"],
+    "Push-conditioned reward redesign mode.",
+)
+_RECOVERY_WINDOW_K = flags.DEFINE_integer(
+    "recovery_window_k",
+    60,
+    "Recovery-window length in env steps.",
+)
+_RECOVERY_WINDOW_TRACKING_SCALE = flags.DEFINE_float(
+    "recovery_window_tracking_scale",
+    0.2,
+    "Tracking reward scale inside recovery window.",
+)
+_RECOVERY_OMEGA_WEIGHT = flags.DEFINE_float(
+    "recovery_omega_weight",
+    0.05,
+    "Post-push angular momentum regularization weight.",
+)
+_RECOVERY_BONUS = flags.DEFINE_float(
+    "recovery_bonus",
+    8.0,
+    "Sparse bonus for stable recovery after window end.",
+)
+_RECOVERY_BONUS_STABILITY_STEPS = flags.DEFINE_integer(
+    "recovery_bonus_stability_steps",
+    10,
+    "Required stable steps before recovery bonus can trigger.",
+)
+_RECOVERY_BONUS_DELAY_STEPS = flags.DEFINE_integer(
+    "recovery_bonus_delay_steps",
+    10,
+    "Delay after recovery window before bonus trigger check.",
+)
+_RECOVERY_STABLE_LIN_MIN = flags.DEFINE_float(
+    "recovery_stable_lin_min",
+    0.7,
+    "Minimum linear tracking score for a step to count as stable.",
+)
+_RECOVERY_STABLE_ANG_MIN = flags.DEFINE_float(
+    "recovery_stable_ang_min",
+    0.7,
+    "Minimum angular tracking score for a step to count as stable.",
+)
+_CAPTURE_POINT_LOG = flags.DEFINE_boolean(
+    "capture_point_log",
+    False,
+    "Enable capture-point proxy logging diagnostics.",
+)
+"""
+  text, n = re.subn(
+      r"\n\ndef get_rl_config\(",
+      "\n" + recovery_reward_flags_block + "\n\ndef get_rl_config(",
+      text,
+      count=1,
+  )
+  if n == 0:
+    text, n2 = re.subn(
+        r'(_PUSH_ENTROPY_DELTA\s*=\s*flags\.DEFINE_float\([\s\S]*?\)\n)',
+        r"\1" + recovery_reward_flags_block + "\n",
+        text,
+        count=1,
+    )
+    if n2 == 0:
+      print("[bootstrap] recovery reward flag insertion failed; skipping")
+      raise SystemExit(0)
+
+env_overrides_old = """  env_cfg_overrides = {}
+  if _PLAYGROUND_CONFIG_OVERRIDES.value is not None:
+    env_cfg_overrides = json.loads(_PLAYGROUND_CONFIG_OVERRIDES.value)
+"""
+env_overrides_new = """  env_cfg_overrides = {}
+  if _PLAYGROUND_CONFIG_OVERRIDES.value is not None:
+    env_cfg_overrides = json.loads(_PLAYGROUND_CONFIG_OVERRIDES.value)
+  env_cfg_overrides = _merge_overrides(
+      env_cfg_overrides, _build_recovery_reward_overrides()
+  )
+"""
+if "_build_recovery_reward_overrides()" in text and env_overrides_old in text:
+  text = text.replace(env_overrides_old, env_overrides_new, 1)
+
 text, replaced_helpers = re.subn(
-    r"\n# __codex_maxrl_scaffold_v[0-9A-Za-z_]+__\n(?:def _groupwise_binary_weights|def _log_maxrl_scaffold_config)[\s\S]*?\n\ndef main\(argv\):",
+    r"\n# __codex_maxrl_scaffold_v[0-9A-Za-z_]+__\n(?:def _merge_overrides|def _groupwise_binary_weights|def _log_maxrl_scaffold_config)[\s\S]*?\n\ndef main\(argv\):",
     "\n\n" + helpers_block + "\n\ndef main(argv):",
     text,
     count=1,
@@ -827,7 +1376,7 @@ text, replaced_helpers = re.subn(
 
 if replaced_helpers == 0:
   text, replaced_helpers = re.subn(
-      r"\n\ndef _groupwise_binary_weights\([\s\S]*?\n\ndef main\(argv\):",
+      r"\n\ndef (?:_merge_overrides|_groupwise_binary_weights)\([\s\S]*?\n\ndef main\(argv\):",
       "\n\n" + helpers_block + "\n\ndef main(argv):",
       text,
       count=1,
@@ -951,6 +1500,7 @@ if [ "${BOOTSTRAP_OFFLINE}" = "1" ]; then
   fi
   apply_mjx_make_data_compat_shim
   apply_jax_clip_kwarg_compat_shim
+  apply_g1_recovery_reward_shim
   apply_maxrl_scaffold_shim
   VENV_PY="${VENV_DIR}/bin/python"
   if [ ! -x "${VENV_PY}" ]; then
@@ -1087,6 +1637,7 @@ git_in_repo "${PLAYGROUND_DIR}" fetch --all --tags
 git_in_repo "${PLAYGROUND_DIR}" checkout "${PLAYGROUND_REF}"
 apply_mjx_make_data_compat_shim
 apply_jax_clip_kwarg_compat_shim
+apply_g1_recovery_reward_shim
 apply_maxrl_scaffold_shim
 
 if [ -n "${NUMPY_VERSION}" ]; then
