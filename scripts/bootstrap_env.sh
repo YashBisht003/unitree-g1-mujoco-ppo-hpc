@@ -196,7 +196,7 @@ import sys
 
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-marker = "__codex_g1_recovery_reward_v1__"
+marker = "__codex_g1_recovery_reward_v2__"
 if marker in text:
   print("[bootstrap] G1 recovery-reward shim already present")
   raise SystemExit(0)
@@ -261,6 +261,22 @@ if '"recovery_countdown"' not in text:
     print("[bootstrap] failed to insert recovery info fields; skipping")
     raise SystemExit(0)
   text = text.replace(info_anchor, info_insert, 1)
+
+if 'metrics["diagnostics/recovery_countdown"] = jp.zeros(())' not in text:
+  reset_metrics_anchor = '    metrics["swing_peak"] = jp.zeros(())\n'
+  reset_metrics_insert = (
+      '    metrics["swing_peak"] = jp.zeros(())\n'
+      '    metrics["diagnostics/recovery_countdown"] = jp.zeros(())\n'
+      '    metrics["diagnostics/in_recovery_window"] = jp.zeros(())\n'
+      '    metrics["diagnostics/recovery_bonus_flag"] = jp.zeros(())\n'
+      '    metrics["diagnostics/cp_valid"] = jp.zeros(())\n'
+      '    metrics["diagnostics/cp_xy_norm"] = jp.zeros(())\n'
+      '    metrics["diagnostics/cp_fail_window"] = jp.zeros(())\n'
+  )
+  if reset_metrics_anchor not in text:
+    print("[bootstrap] failed to initialize recovery diagnostics metrics; skipping")
+    raise SystemExit(0)
+  text = text.replace(reset_metrics_anchor, reset_metrics_insert, 1)
 
 if "push_event = jp.linalg.norm(push) > 0" not in text:
   push_anchor = "    push *= self._config.push_config.enable\n"
