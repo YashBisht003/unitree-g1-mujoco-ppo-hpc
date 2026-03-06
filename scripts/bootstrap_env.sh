@@ -196,7 +196,7 @@ import sys
 
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-marker = "__codex_maxrl_scaffold_v7__"
+marker = "__codex_maxrl_scaffold_v8__"
 if marker in text:
   print("[bootstrap] MaxRL scaffold shim already present")
   raise SystemExit(0)
@@ -257,6 +257,17 @@ _PUSH_EVENT_EPS = flags.DEFINE_float(
     "push_event_eps",
     1e-6,
     "Threshold on |push| for detecting push timesteps.",
+)
+_PUSH_ENTROPY_MODE = flags.DEFINE_enum(
+    "push_entropy_mode",
+    "off",
+    ["off", "post_push_additive"],
+    "Push-conditioned entropy mode.",
+)
+_PUSH_ENTROPY_DELTA = flags.DEFINE_float(
+    "push_entropy_delta",
+    0.0,
+    "Additional entropy coefficient on post-push timesteps (additive).",
 )
 """
 flags_block = flags_block.replace("__MARKER__", marker)
@@ -335,6 +346,17 @@ def _episode_success_from_episode_done(termination, episode_done):
   return success, valid
 
 
+def _post_push_mask_from_state_extras(state_extras, dtype):
+  \"\"\"Returns post-push mask [T, N], or None when push signal is unavailable.\"\"\"
+
+  push_vec = state_extras["push"] if "push" in state_extras else None
+  if push_vec is None:
+    return None
+  push_mag = jp.linalg.norm(push_vec, axis=-1)
+  push_event = (push_mag > _PUSH_EVENT_EPS.value).astype(dtype)
+  return (jp.cumsum(push_event, axis=0) > 0).astype(dtype)
+
+
 def _groupwise_temporal_weights(temporal_success, group_size: int):
   \"\"\"Computes per-(t, rollout) MaxRL-T weights within scenario groups.\"\"\"
 
@@ -409,6 +431,7 @@ def _compute_ppo_loss_with_maxrl(
   maxrl_valid_fraction = jp.array(1.0, dtype=rewards.dtype)
   push_mask_mean_weight = jp.array(1.0, dtype=rewards.dtype)
   push_mask_post_fraction = jp.array(0.0, dtype=rewards.dtype)
+  push_entropy_mean_coeff = jp.array(entropy_cost, dtype=rewards.dtype)
   adv_mode = _ADV_MODE.value
   group_size = int(_SCENARIO_GROUP_SIZE.value)
 
@@ -441,16 +464,14 @@ def _compute_ppo_loss_with_maxrl(
     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
   push_mask_mode = _PUSH_ADV_MASK_MODE.value
+  post_push = None
   if push_mask_mode != "off":
-    push_vec = state_extras["push"] if "push" in state_extras else None
-    if push_vec is None:
+    post_push = _post_push_mask_from_state_extras(state_extras, advantages.dtype)
+    if post_push is None:
       raise ValueError(
           "push_adv_mask_mode requires state_extras['push'], but it is missing. "
           "Ensure _install_push_mask_patch is active and env exposes state.info['push']."
       )
-    push_mag = jp.linalg.norm(push_vec, axis=-1)
-    push_event = (push_mag > _PUSH_EVENT_EPS.value).astype(advantages.dtype)
-    post_push = (jp.cumsum(push_event, axis=0) > 0).astype(advantages.dtype)
     if push_mask_mode == "post_push_soft":
       pre_w = _PUSH_ADV_PRE_WEIGHT.value
       adv_mask = pre_w + (1.0 - pre_w) * post_push
@@ -471,8 +492,24 @@ def _compute_ppo_loss_with_maxrl(
   v_error = vs - baseline
   v_loss = jp.mean(v_error * v_error) * 0.5 * 0.5
 
-  entropy = jp.mean(parametric_action_distribution.entropy(policy_logits, rng))
-  entropy_loss = entropy_cost * -entropy
+  entropy_per_t = parametric_action_distribution.entropy(policy_logits, rng)
+  push_entropy_mode = _PUSH_ENTROPY_MODE.value
+  if push_entropy_mode != "off":
+    if post_push is None:
+      post_push = _post_push_mask_from_state_extras(state_extras, advantages.dtype)
+    if post_push is None:
+      raise ValueError(
+          "push_entropy_mode requires state_extras['push'], but it is missing. "
+          "Ensure _install_push_mask_patch is active and env exposes state.info['push']."
+      )
+    if push_entropy_mode == "post_push_additive":
+      entropy_coeff = entropy_cost + _PUSH_ENTROPY_DELTA.value * post_push
+    else:
+      entropy_coeff = jp.ones_like(post_push) * entropy_cost
+    entropy_loss = -jp.mean(entropy_coeff * entropy_per_t)
+    push_entropy_mean_coeff = jp.mean(entropy_coeff)
+  else:
+    entropy_loss = entropy_cost * -jp.mean(entropy_per_t)
 
   total_loss = policy_loss + v_loss + entropy_loss
   metrics = {
@@ -488,14 +525,17 @@ def _compute_ppo_loss_with_maxrl(
   if _PUSH_ADV_MASK_MODE.value != "off":
     metrics["push_mask/mean_weight"] = push_mask_mean_weight
     metrics["push_mask/post_fraction"] = push_mask_post_fraction
+  if _PUSH_ENTROPY_MODE.value != "off":
+    metrics["push_entropy/mean_coeff"] = push_entropy_mean_coeff
   return total_loss, metrics
 
 
 def _install_push_mask_patch() -> None:
-  \"\"\"Ensures `push` is available in state_extras when masking is enabled.\"\"\"
+  \"\"\"Ensures `push` is available in state_extras when push-conditioned modes are enabled.\"\"\"
 
-  mode = _PUSH_ADV_MASK_MODE.value
-  if mode == "off":
+  mask_mode = _PUSH_ADV_MASK_MODE.value
+  entropy_mode = _PUSH_ENTROPY_MODE.value
+  if mask_mode == "off" and entropy_mode == "off":
     return
 
   from brax.training import acting as brax_acting
@@ -516,19 +556,23 @@ def _install_push_mask_patch() -> None:
 
   brax_acting.generate_unroll = _generate_unroll_with_push
   print(
-      "[push-mask] requested `push` in state_extras "
-      f"(mode={mode}, pre_weight={_PUSH_ADV_PRE_WEIGHT.value})."
+      "[push] requested `push` in state_extras "
+      f"(mask_mode={mask_mode}, entropy_mode={entropy_mode}, "
+      f"pre_weight={_PUSH_ADV_PRE_WEIGHT.value}, entropy_delta={_PUSH_ENTROPY_DELTA.value})."
   )
 
 
 def _install_maxrl_loss_patch() -> None:
-  \"\"\"Installs runtime PPO-loss patch when adv_mode requests MaxRL behavior.\"\"\"
+  \"\"\"Installs runtime PPO-loss patch for MaxRL and push-conditioned objectives.\"\"\"
 
   adv_mode = _ADV_MODE.value
-  if adv_mode == "ppo":
-    return
-  if _MAXRL_LOG_ONLY.value:
-    print("[maxrl] maxrl_log_only=True -> keeping baseline PPO loss.")
+  need_push_objective = (
+      _PUSH_ADV_MASK_MODE.value != "off" or _PUSH_ENTROPY_MODE.value != "off"
+  )
+  need_maxrl_objective = adv_mode != "ppo" and not _MAXRL_LOG_ONLY.value
+  if not need_push_objective and not need_maxrl_objective:
+    if adv_mode != "ppo" and _MAXRL_LOG_ONLY.value:
+      print("[maxrl] maxrl_log_only=True -> keeping baseline PPO loss.")
     return
 
   patched_name = getattr(ppo_losses.compute_ppo_loss, "__name__", "")
@@ -537,8 +581,10 @@ def _install_maxrl_loss_patch() -> None:
 
   ppo_losses.compute_ppo_loss = _compute_ppo_loss_with_maxrl
   print(
-      "[maxrl] installed PPO loss patch "
-      f"(adv_mode={adv_mode}, scenario_group_size={_SCENARIO_GROUP_SIZE.value})."
+      "[objective] installed PPO loss patch "
+      f"(adv_mode={adv_mode}, push_adv_mask_mode={_PUSH_ADV_MASK_MODE.value}, "
+      f"push_entropy_mode={_PUSH_ENTROPY_MODE.value}, "
+      f"scenario_group_size={_SCENARIO_GROUP_SIZE.value})."
   )
 
 
@@ -586,6 +632,12 @@ def _log_maxrl_scaffold_config(num_envs: int) -> None:
     print(
         "[push-mask] mode="
         f"{_PUSH_ADV_MASK_MODE.value}, pre_weight={_PUSH_ADV_PRE_WEIGHT.value}, "
+        f"event_eps={_PUSH_EVENT_EPS.value}"
+    )
+  if _PUSH_ENTROPY_MODE.value != "off":
+    print(
+        "[push-entropy] mode="
+        f"{_PUSH_ENTROPY_MODE.value}, delta={_PUSH_ENTROPY_DELTA.value}, "
         f"event_eps={_PUSH_EVENT_EPS.value}"
     )
 
@@ -713,6 +765,57 @@ _PUSH_EVENT_EPS = flags.DEFINE_float(
     )
     if n2 == 0:
       print("[bootstrap] push_event_eps flag insertion failed; skipping")
+      raise SystemExit(0)
+
+if "_PUSH_ENTROPY_MODE = flags.DEFINE_enum(" not in text:
+  push_entropy_mode_block = """
+_PUSH_ENTROPY_MODE = flags.DEFINE_enum(
+    "push_entropy_mode",
+    "off",
+    ["off", "post_push_additive"],
+    "Push-conditioned entropy mode.",
+)
+"""
+  text, n = re.subn(
+      r"\n\ndef get_rl_config\(",
+      "\n" + push_entropy_mode_block + "\n\ndef get_rl_config(",
+      text,
+      count=1,
+  )
+  if n == 0:
+    text, n2 = re.subn(
+        r'(_PUSH_EVENT_EPS\s*=\s*flags\.DEFINE_float\([\s\S]*?\)\n)',
+        r"\1" + push_entropy_mode_block + "\n",
+        text,
+        count=1,
+    )
+    if n2 == 0:
+      print("[bootstrap] push_entropy_mode flag insertion failed; skipping")
+      raise SystemExit(0)
+
+if "_PUSH_ENTROPY_DELTA = flags.DEFINE_float(" not in text:
+  push_entropy_delta_block = """
+_PUSH_ENTROPY_DELTA = flags.DEFINE_float(
+    "push_entropy_delta",
+    0.0,
+    "Additional entropy coefficient on post-push timesteps (additive).",
+)
+"""
+  text, n = re.subn(
+      r"\n\ndef get_rl_config\(",
+      "\n" + push_entropy_delta_block + "\n\ndef get_rl_config(",
+      text,
+      count=1,
+  )
+  if n == 0:
+    text, n2 = re.subn(
+        r'(_PUSH_ENTROPY_MODE\s*=\s*flags\.DEFINE_enum\([\s\S]*?\)\n)',
+        r"\1" + push_entropy_delta_block + "\n",
+        text,
+        count=1,
+    )
+    if n2 == 0:
+      print("[bootstrap] push_entropy_delta flag insertion failed; skipping")
       raise SystemExit(0)
 
 text, replaced_helpers = re.subn(
