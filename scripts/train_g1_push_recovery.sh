@@ -75,6 +75,8 @@ MAXRL_SCENARIO_KEY="${MAXRL_SCENARIO_KEY:-push_cfg}"
 MAXRL_VERBOSE="${MAXRL_VERBOSE:-1}"
 PUSH_ADV_MASK_MODE="${PUSH_ADV_MASK_MODE:-off}"   # off|post_push_soft|post_push_hard
 PUSH_ADV_PRE_WEIGHT="${PUSH_ADV_PRE_WEIGHT:-0.1}" # used by post_push_soft
+PUSH_MASK_SOURCE="${PUSH_MASK_SOURCE:-chunk}"     # chunk|stateful
+PUSH_MASK_WINDOW_K="${PUSH_MASK_WINDOW_K:-20}"    # used by stateful source
 PUSH_EVENT_EPS="${PUSH_EVENT_EPS:-1e-6}"
 PUSH_ENTROPY_MODE="${PUSH_ENTROPY_MODE:-off}"     # off|post_push_additive
 PUSH_ENTROPY_DELTA="${PUSH_ENTROPY_DELTA:-0.0}"
@@ -182,6 +184,8 @@ CMD=(
   --maxrl_verbose="${MAXRL_VERBOSE_BOOL}"
   --push_adv_mask_mode="${PUSH_ADV_MASK_MODE}"
   --push_adv_pre_weight="${PUSH_ADV_PRE_WEIGHT}"
+  --push_mask_source="${PUSH_MASK_SOURCE}"
+  --push_mask_window_k="${PUSH_MASK_WINDOW_K}"
   --push_event_eps="${PUSH_EVENT_EPS}"
   --push_entropy_mode="${PUSH_ENTROPY_MODE}"
   --push_entropy_delta="${PUSH_ENTROPY_DELTA}"
@@ -215,7 +219,7 @@ if [ -d "${ROUGH_CKPT}" ]; then
 fi
 CMD+=(--load_checkpoint_path="${CKPT_ARG}")
 
-echo "[train-push] mode=${MODE} adv_mode=${ADV_MODE_FLAG} scenario_group_size=${SCENARIO_GROUP_SIZE} push_adv_mask_mode=${PUSH_ADV_MASK_MODE} push_entropy_mode=${PUSH_ENTROPY_MODE}"
+echo "[train-push] mode=${MODE} adv_mode=${ADV_MODE_FLAG} scenario_group_size=${SCENARIO_GROUP_SIZE} push_adv_mask_mode=${PUSH_ADV_MASK_MODE} push_mask_source=${PUSH_MASK_SOURCE} push_mask_window_k=${PUSH_MASK_WINDOW_K} push_entropy_mode=${PUSH_ENTROPY_MODE}"
 if [ -n "${PLAYGROUND_CONFIG_OVERRIDES:-}" ]; then
   echo "[train-push] playground_config_overrides=${PLAYGROUND_CONFIG_OVERRIDES}"
 fi

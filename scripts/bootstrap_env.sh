@@ -196,7 +196,7 @@ import sys
 
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-marker = "__codex_g1_recovery_reward_v2__"
+marker = "__codex_g1_recovery_reward_v3__"
 if marker in text:
   print("[bootstrap] G1 recovery-reward shim already present")
   raise SystemExit(0)
@@ -223,6 +223,7 @@ if "recovery_reward=config_dict.create(" not in text:
       recovery_reward=config_dict.create(
           mode="off",  # off|recovery_window
           window_steps=60,
+          push_mask_window_steps=20,
           tracking_scale=0.2,
           omega_weight=0.05,
           bonus=8.0,
@@ -243,6 +244,14 @@ if "recovery_reward=config_dict.create(" not in text:
     print("[bootstrap] failed to insert recovery_reward config; skipping")
     raise SystemExit(0)
 
+if "push_mask_window_steps=" not in text:
+  text = text.replace(
+      '          window_steps=60,\n',
+      '          window_steps=60,\n'
+      '          push_mask_window_steps=20,\n',
+      1,
+  )
+
 if '"recovery_countdown"' not in text:
   info_anchor = '        "push_interval_steps": push_interval_steps,\n'
   info_insert = (
@@ -252,6 +261,8 @@ if '"recovery_countdown"' not in text:
       '        "recovery_survived": jp.array(1.0),\n'
       '        "recovery_bonus_flag": jp.array(0.0),\n'
       '        "in_recovery_window": jp.array(0.0),\n'
+      '        "push_mask_countdown": jp.array(0, dtype=jp.int32),\n'
+      '        "in_push_mask_window": jp.array(0.0),\n'
       '        "cp_pending_steps": jp.array(0, dtype=jp.int32),\n'
       '        "cp_valid": jp.array(0.0),\n'
       '        "cp_xy_norm": jp.array(0.0),\n'
@@ -261,6 +272,18 @@ if '"recovery_countdown"' not in text:
     print("[bootstrap] failed to insert recovery info fields; skipping")
     raise SystemExit(0)
   text = text.replace(info_anchor, info_insert, 1)
+
+if '"push_mask_countdown"' not in text:
+  info_upgrade_anchor = '        "in_recovery_window": jp.array(0.0),\n'
+  info_upgrade_insert = (
+      '        "in_recovery_window": jp.array(0.0),\n'
+      '        "push_mask_countdown": jp.array(0, dtype=jp.int32),\n'
+      '        "in_push_mask_window": jp.array(0.0),\n'
+  )
+  if info_upgrade_anchor not in text:
+    print("[bootstrap] failed to insert push-mask info fields; skipping")
+    raise SystemExit(0)
+  text = text.replace(info_upgrade_anchor, info_upgrade_insert, 1)
 
 if 'metrics["diagnostics/recovery_countdown"] = jp.zeros(())' not in text:
   reset_metrics_anchor = '    metrics["swing_peak"] = jp.zeros(())\n'
@@ -309,6 +332,15 @@ new_block = """    done = self._get_termination(data)
     in_recovery_window = recovery_enabled & (
         recovery_countdown > rec_cfg.bonus_delay_steps
     )
+    mask_window_steps = jp.maximum(
+        1, jp.array(rec_cfg.push_mask_window_steps, dtype=jp.int32)
+    )
+    push_mask_countdown = jp.where(
+        push_event,
+        mask_window_steps,
+        jp.maximum(state.info["push_mask_countdown"] - 1, 0),
+    )
+    in_push_mask_window = push_mask_countdown > 0
 
     lin_track_for_bonus = self._reward_tracking_lin_vel(
         state.info["command"], self.get_local_linvel(data, "pelvis")
@@ -383,6 +415,8 @@ new_block = """    done = self._get_termination(data)
 
     state.info["recovery_countdown"] = recovery_countdown
     state.info["in_recovery_window"] = in_recovery_window.astype(jp.float32)
+    state.info["push_mask_countdown"] = push_mask_countdown
+    state.info["in_push_mask_window"] = in_push_mask_window.astype(jp.float32)
     state.info["recovery_survived"] = recovery_survived
     state.info["recovery_stable_steps"] = recovery_stable_steps
     state.info["recovery_bonus_flag"] = recovery_bonus_flag.astype(jp.float32)
@@ -397,6 +431,41 @@ new_block = """    done = self._get_termination(data)
 """
 if old_block in text:
   text = text.replace(old_block, new_block, 1)
+elif "rec_cfg = self._config.recovery_reward" in text and "state.info[\"recovery_countdown\"] = recovery_countdown" in text:
+  if "push_mask_countdown = jp.where(" not in text:
+    mask_anchor = """    in_recovery_window = recovery_enabled & (
+        recovery_countdown > rec_cfg.bonus_delay_steps
+    )
+"""
+    mask_insert = """    in_recovery_window = recovery_enabled & (
+        recovery_countdown > rec_cfg.bonus_delay_steps
+    )
+    mask_window_steps = jp.maximum(
+        1, jp.array(rec_cfg.push_mask_window_steps, dtype=jp.int32)
+    )
+    push_mask_countdown = jp.where(
+        push_event,
+        mask_window_steps,
+        jp.maximum(state.info["push_mask_countdown"] - 1, 0),
+    )
+    in_push_mask_window = push_mask_countdown > 0
+"""
+    if mask_anchor not in text:
+      print("[bootstrap] failed to patch stateful push-mask logic; skipping")
+      raise SystemExit(0)
+    text = text.replace(mask_anchor, mask_insert, 1)
+
+  if 'state.info["push_mask_countdown"] = push_mask_countdown' not in text:
+    mask_state_anchor = '    state.info["in_recovery_window"] = in_recovery_window.astype(jp.float32)\n'
+    mask_state_insert = (
+        '    state.info["in_recovery_window"] = in_recovery_window.astype(jp.float32)\n'
+        '    state.info["push_mask_countdown"] = push_mask_countdown\n'
+        '    state.info["in_push_mask_window"] = in_push_mask_window.astype(jp.float32)\n'
+    )
+    if mask_state_anchor not in text:
+      print("[bootstrap] failed to patch stateful push-mask state fields; skipping")
+      raise SystemExit(0)
+    text = text.replace(mask_state_anchor, mask_state_insert, 1)
 else:
   print("[bootstrap] failed to patch step recovery logic; skipping")
   raise SystemExit(0)
@@ -561,7 +630,7 @@ import sys
 
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-marker = "__codex_maxrl_scaffold_v9__"
+marker = "__codex_maxrl_scaffold_v10__"
 if marker in text:
   print("[bootstrap] MaxRL scaffold shim already present")
   raise SystemExit(0)
@@ -617,6 +686,17 @@ _PUSH_ADV_PRE_WEIGHT = flags.DEFINE_float(
     "push_adv_pre_weight",
     0.1,
     "Pre-push weight used by post_push_soft masking.",
+)
+_PUSH_MASK_SOURCE = flags.DEFINE_enum(
+    "push_mask_source",
+    "chunk",
+    ["chunk", "stateful"],
+    "Mask source: chunk-local cumsum on `push`, or stateful env window.",
+)
+_PUSH_MASK_WINDOW_K = flags.DEFINE_integer(
+    "push_mask_window_k",
+    20,
+    "Stateful post-push mask window length in env steps.",
 )
 _PUSH_EVENT_EPS = flags.DEFINE_float(
     "push_event_eps",
@@ -701,22 +781,33 @@ def _merge_overrides(dst, src):
 
 
 def _build_recovery_reward_overrides():
-  if _PUSH_REWARD_MODE.value == "off":
-    return {}
-  return {
-      "recovery_reward": {
-          "mode": _PUSH_REWARD_MODE.value,
-          "window_steps": int(_RECOVERY_WINDOW_K.value),
-          "tracking_scale": float(_RECOVERY_WINDOW_TRACKING_SCALE.value),
-          "omega_weight": float(_RECOVERY_OMEGA_WEIGHT.value),
-          "bonus": float(_RECOVERY_BONUS.value),
-          "bonus_stability_steps": int(_RECOVERY_BONUS_STABILITY_STEPS.value),
-          "bonus_delay_steps": int(_RECOVERY_BONUS_DELAY_STEPS.value),
-          "stable_lin_tracking_min": float(_RECOVERY_STABLE_LIN_MIN.value),
-          "stable_ang_tracking_min": float(_RECOVERY_STABLE_ANG_MIN.value),
-          "capture_point_log": bool(_CAPTURE_POINT_LOG.value),
-      }
-  }
+  overrides = {}
+  if _PUSH_REWARD_MODE.value != "off":
+    overrides = {
+        "recovery_reward": {
+            "mode": _PUSH_REWARD_MODE.value,
+            "window_steps": int(_RECOVERY_WINDOW_K.value),
+            "tracking_scale": float(_RECOVERY_WINDOW_TRACKING_SCALE.value),
+            "omega_weight": float(_RECOVERY_OMEGA_WEIGHT.value),
+            "bonus": float(_RECOVERY_BONUS.value),
+            "bonus_stability_steps": int(_RECOVERY_BONUS_STABILITY_STEPS.value),
+            "bonus_delay_steps": int(_RECOVERY_BONUS_DELAY_STEPS.value),
+            "stable_lin_tracking_min": float(_RECOVERY_STABLE_LIN_MIN.value),
+            "stable_ang_tracking_min": float(_RECOVERY_STABLE_ANG_MIN.value),
+            "capture_point_log": bool(_CAPTURE_POINT_LOG.value),
+        }
+    }
+
+  if _PUSH_ADV_MASK_MODE.value != "off" and _PUSH_MASK_SOURCE.value == "stateful":
+    overrides = _merge_overrides(
+        overrides,
+        {
+            "recovery_reward": {
+                "push_mask_window_steps": int(_PUSH_MASK_WINDOW_K.value),
+            }
+        },
+    )
+  return overrides
 
 
 def _groupwise_binary_weights(success, group_size: int, valid=None):
@@ -793,6 +884,15 @@ def _episode_success_from_episode_done(termination, episode_done):
 
 def _post_push_mask_from_state_extras(state_extras, dtype):
   \"\"\"Returns post-push mask [T, N], or None when push signal is unavailable.\"\"\"
+
+  if _PUSH_MASK_SOURCE.value == "stateful":
+    mask_window = (
+        state_extras["in_push_mask_window"]
+        if "in_push_mask_window" in state_extras
+        else None
+    )
+    if mask_window is not None:
+      return (mask_window > 0.5).astype(dtype)
 
   push_vec = state_extras["push"] if "push" in state_extras else None
   if push_vec is None:
@@ -995,6 +1095,8 @@ def _install_push_mask_patch() -> None:
     extras = tuple(extra_fields) if extra_fields is not None else ()
     if "push" not in extras:
       extras = extras + ("push",)
+    if _PUSH_MASK_SOURCE.value == "stateful" and "in_push_mask_window" not in extras:
+      extras = extras + ("in_push_mask_window",)
     return current(
         env, env_state, policy, key, unroll_length, extra_fields=extras
     )
@@ -1003,6 +1105,7 @@ def _install_push_mask_patch() -> None:
   print(
       "[push] requested `push` in state_extras "
       f"(mask_mode={mask_mode}, entropy_mode={entropy_mode}, "
+      f"mask_source={_PUSH_MASK_SOURCE.value}, mask_k={_PUSH_MASK_WINDOW_K.value}, "
       f"pre_weight={_PUSH_ADV_PRE_WEIGHT.value}, entropy_delta={_PUSH_ENTROPY_DELTA.value})."
   )
 
@@ -1077,6 +1180,7 @@ def _log_maxrl_scaffold_config(num_envs: int) -> None:
     print(
         "[push-mask] mode="
         f"{_PUSH_ADV_MASK_MODE.value}, pre_weight={_PUSH_ADV_PRE_WEIGHT.value}, "
+        f"source={_PUSH_MASK_SOURCE.value}, K={_PUSH_MASK_WINDOW_K.value}, "
         f"event_eps={_PUSH_EVENT_EPS.value}"
     )
   if _PUSH_ENTROPY_MODE.value != "off":
@@ -1220,6 +1324,57 @@ _PUSH_ADV_PRE_WEIGHT = flags.DEFINE_float(
     )
     if n2 == 0:
       print("[bootstrap] push_adv_pre_weight flag insertion failed; skipping")
+      raise SystemExit(0)
+
+if "_PUSH_MASK_SOURCE = flags.DEFINE_enum(" not in text:
+  push_mask_source_block = """
+_PUSH_MASK_SOURCE = flags.DEFINE_enum(
+    "push_mask_source",
+    "chunk",
+    ["chunk", "stateful"],
+    "Mask source: chunk-local cumsum on `push`, or stateful env window.",
+)
+"""
+  text, n = re.subn(
+      r"\n\ndef get_rl_config\(",
+      "\n" + push_mask_source_block + "\n\ndef get_rl_config(",
+      text,
+      count=1,
+  )
+  if n == 0:
+    text, n2 = re.subn(
+        r'(_PUSH_ADV_PRE_WEIGHT\s*=\s*flags\.DEFINE_float\([\s\S]*?\)\n)',
+        r"\1" + push_mask_source_block + "\n",
+        text,
+        count=1,
+    )
+    if n2 == 0:
+      print("[bootstrap] push_mask_source flag insertion failed; skipping")
+      raise SystemExit(0)
+
+if "_PUSH_MASK_WINDOW_K = flags.DEFINE_integer(" not in text:
+  push_mask_k_block = """
+_PUSH_MASK_WINDOW_K = flags.DEFINE_integer(
+    "push_mask_window_k",
+    20,
+    "Stateful post-push mask window length in env steps.",
+)
+"""
+  text, n = re.subn(
+      r"\n\ndef get_rl_config\(",
+      "\n" + push_mask_k_block + "\n\ndef get_rl_config(",
+      text,
+      count=1,
+  )
+  if n == 0:
+    text, n2 = re.subn(
+        r'(_PUSH_MASK_SOURCE\s*=\s*flags\.DEFINE_enum\([\s\S]*?\)\n)',
+        r"\1" + push_mask_k_block + "\n",
+        text,
+        count=1,
+    )
+    if n2 == 0:
+      print("[bootstrap] push_mask_window_k flag insertion failed; skipping")
       raise SystemExit(0)
 
 if "_PUSH_EVENT_EPS = flags.DEFINE_float(" not in text:
