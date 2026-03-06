@@ -1,0 +1,124 @@
+\documentclass[letterpaper, 10 pt, conference]{ieeeconf}
+\IEEEoverridecommandlockouts
+\overrideIEEEmargins
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{graphicx}
+\usepackage{url}
+\usepackage{hyperref}
+
+\title{\LARGE \bf
+Push-Recovery Fine-Tuning from Rough-Terrain Pretraining:\\
+A Negative Result Study on Credit-Assignment Modifications}
+
+\author{
+Yash Bisht$^{1}$%
+\thanks{$^{1}$Yash Bisht is with the Department of Mechanical and Industrial Engineering, IIT Roorkee, India.
+{\tt\small y\_bisht@me.iitr.ac.in}}
+}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+\pagestyle{empty}
+
+\begin{abstract}
+This paper reports a controlled negative-result study on push-recovery fine-tuning for Unitree G1 in MuJoCo Playground. Starting from a strong rough-terrain pretrained policy, we compare asymmetric PPO against multiple credit-assignment and exploration variants: MaxRL-binary rollout reweighting, post-push advantage masking, and post-push additive entropy injection. Evaluation is performed using recovery-rate versus push magnitude. Across repeated runs, asymmetric PPO remains a strong baseline at the boundary regime, while tested modifications do not improve 2.5\,N recovery and can significantly regress under aggressive entropy injection. The main contribution is a reproducible experimental pipeline and an analysis of why intuitive weighting/masking interventions may underperform when the pretrained policy is already near a robust local optimum.
+\end{abstract}
+
+\section{Introduction}
+Push-recovery adaptation for legged locomotion is often framed as a credit-assignment problem: sparse failure signals must be traced back to short recovery windows after perturbations. We investigated whether targeted objective modifications improve sample efficiency beyond asymmetric PPO (privileged critic) when fine-tuning from a strong rough-terrain checkpoint.
+
+Our practical goal was to improve boundary recovery (e.g., 2.5\,N) without sacrificing stable gait. Instead, we observed that several seemingly principled modifications either matched or underperformed the PPO baseline. We document this result as a useful empirical boundary for future method design.
+
+\section{Experimental Setup}
+\subsection{Environment and Training}
+We use \texttt{G1JoystickRoughTerrain} with domain randomization and push perturbations enabled. The main push-training range is:
+\begin{itemize}
+  \item \textbf{magnitude\_range}: [1.0, 2.5]\,N
+  \item \textbf{interval\_range}: [2.0, 5.0]\,s
+\end{itemize}
+All runs initialize from a rough-terrain pretrained checkpoint and use 1024 training environments / 128 evaluation environments.
+
+\subsection{Compared Methods}
+\begin{itemize}
+  \item \textbf{Asymmetric PPO baseline}: standard PPO objective with privileged critic.
+  \item \textbf{MaxRL-binary}: groupwise binary rollout weighting (scenario grouping) with termination-based success.
+  \item \textbf{PPO + post-push soft advantage masking}: down-weights pre-push gradients and emphasizes post-push segments.
+  \item \textbf{PPO + post-push additive entropy}: entropy coefficient increased only in post-push timesteps.
+\end{itemize}
+
+\subsection{Metric}
+Primary metric is \textbf{recovery rate} over fixed push magnitudes. A trial is successful if the policy does not terminate in the post-push recovery window. We report success fraction across episodes per magnitude.
+
+\section{Main Results}
+\subsection{5M Steps: PPO vs MaxRL-binary}
+Table~\ref{tab:ppo_vs_maxrl_5m} compares 5M-step runs (100 episodes per magnitude in this comparison batch).
+
+\begin{table}[t]
+\centering
+\caption{Recovery rate at 5M steps: asymmetric PPO vs MaxRL-binary.}
+\label{tab:ppo_vs_maxrl_5m}
+\begin{tabular}{cccc}
+\toprule
+Push (N) & PPO & MaxRL-binary & $\Delta$ (MaxRL-PPO) \\
+\midrule
+0.5 & 0.95 & 0.97 & +0.02 \\
+1.0 & 0.94 & 0.91 & -0.03 \\
+1.5 & 0.81 & 0.80 & -0.01 \\
+2.0 & 0.55 & 0.53 & -0.02 \\
+2.5 & 0.30 & 0.16 & -0.14 \\
+3.0 & 0.02 & 0.02 & +0.00 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The largest effect appears at 2.5\,N, where MaxRL-binary regresses by 14 points.
+
+\subsection{25M Steps: Baseline vs Post-Push Masking}
+Longer training (25M) with post-push masking did not surpass baseline at boundary magnitudes (300-episode evaluation for these points):
+\begin{itemize}
+  \item 2.0\,N: baseline 0.593 vs mask-soft 0.597 (near-equal)
+  \item 2.5\,N: baseline 0.280 vs mask-soft 0.233 (worse)
+  \item 3.0\,N: baseline 0.073 vs mask-soft 0.070 (near-equal)
+\end{itemize}
+
+\subsection{Post-Push Entropy Injection}
+Aggressive entropy injection (\texttt{push\_entropy\_delta}=0.05) caused clear boundary collapse in a 5M run:
+\begin{itemize}
+  \item 2.5\,N: 0.02
+  \item 3.0\,N: 0.00
+\end{itemize}
+This indicates instability under high localized exploration pressure in the tested configuration.
+
+\section{Discussion}
+The experiments support three practical conclusions:
+\begin{enumerate}
+  \item \textbf{Strong pretrained asymmetric PPO is hard to beat with simple weighting/masking add-ons.}
+  \item \textbf{Boundary-point gains (2.5\,N) are the decisive criterion.} Most variants tracked baseline at easy magnitudes while failing to improve at the boundary.
+  \item \textbf{Localized exploration needs careful scaling.} Entropy boosts that are too large can degrade policy behavior faster than they improve recovery discovery.
+\end{enumerate}
+
+These findings suggest the limiting factor is not only return-credit shaping; robust boundary improvement may require a stronger perturbation curriculum, sequence-level credit mechanisms, or safer exploration control.
+
+\section{Reproducibility Notes}
+We implemented:
+\begin{itemize}
+  \item SLURM-based training/evaluation scripts for PPO and MaxRL variants.
+  \item Recovery-rate evaluator over push-magnitude sweeps (\texttt{research/eval\_recovery\_rate.py}).
+  \item Logging, checkpoint handling, and HPC-specific stability fixes.
+\end{itemize}
+
+Code snapshot tag used to freeze this study:
+\texttt{exp-push-recovery-negative-20260306}.
+
+\section{Conclusion}
+For push-recovery fine-tuning from rough-terrain pretraining, the tested objective modifications (MaxRL-binary, post-push masking, and aggressive post-push entropy injection) did not improve boundary recovery over asymmetric PPO in our setup and sometimes regressed. This negative result is informative: future work should prioritize curriculum design and safer exploration strategies, and should evaluate success primarily at boundary push magnitudes where methods are most likely to diverge.
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}
