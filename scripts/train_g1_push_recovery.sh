@@ -34,12 +34,25 @@ import sysconfig
 print(sysconfig.get_paths()["purelib"])
 PY
 )"
+  CUDA_NVCC_DIR="${VENV_SITE}/nvidia/cuda_nvcc"
+  LIBDEVICE="${CUDA_NVCC_DIR}/nvvm/libdevice/libdevice.10.bc"
   if [ -d "${VENV_SITE}/nvidia" ]; then
     CUDA_LIB_DIRS="$(find "${VENV_SITE}/nvidia" -maxdepth 3 -type d -name lib 2>/dev/null | tr '\n' ':')"
     if [ -n "${CUDA_LIB_DIRS}" ]; then
       export LD_LIBRARY_PATH="${CUDA_LIB_DIRS%:}:${LD_LIBRARY_PATH:-}"
       echo "[train-push] added CUDA libs from ${VENV_SITE}/nvidia to LD_LIBRARY_PATH"
     fi
+  fi
+  if [ -d "${CUDA_NVCC_DIR}" ]; then
+    chmod -R a+rX "${CUDA_NVCC_DIR}" 2>/dev/null || true
+    export XLA_FLAGS="--xla_gpu_cuda_data_dir=${CUDA_NVCC_DIR} ${XLA_FLAGS:-}"
+    echo "[train-push] set XLA cuda data dir: ${CUDA_NVCC_DIR}"
+  fi
+  if [ ! -r "${LIBDEVICE}" ]; then
+    echo "ERROR: libdevice is not readable: ${LIBDEVICE}"
+    ls -ld "${CUDA_NVCC_DIR}" "${CUDA_NVCC_DIR}/nvvm" "${CUDA_NVCC_DIR}/nvvm/libdevice" 2>/dev/null || true
+    ls -l "${LIBDEVICE}" 2>/dev/null || true
+    exit 1
   fi
 fi
 
