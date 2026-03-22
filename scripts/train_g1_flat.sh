@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${ROOT_DIR}/.venv"
 PLAYGROUND_DIR="${ROOT_DIR}/mujoco_playground"
+RESOLVE_CKPT_SCRIPT="${ROOT_DIR}/scripts/resolve_ppo_checkpoint.sh"
 
 if [ ! -d "${VENV_DIR}" ]; then
   echo "ERROR: missing ${VENV_DIR}. Run: bash scripts/bootstrap_env.sh"
@@ -104,25 +105,23 @@ if [ -n "${MAXRL_VERBOSE}" ]; then
   CMD+=(--maxrl_verbose="${MAXRL_VERBOSE}")
 fi
 if [ -n "${LOAD_CKPT:-}" ]; then
-  CKPT_ARG="${LOAD_CKPT}"
-  if [ -d "${LOAD_CKPT}" ]; then
-    CKPT_BASE="$(basename "${LOAD_CKPT}")"
-    HAS_CHILD_DIR=0
-    if find "${LOAD_CKPT}" -mindepth 1 -maxdepth 1 -type d | read -r _; then
-      HAS_CHILD_DIR=1
-    fi
-    if echo "${CKPT_BASE}" | grep -Eq '^[0-9]+$' && [ "${HAS_CHILD_DIR}" = "0" ]; then
+  RESOLVED_LOAD_CKPT="$("${RESOLVE_CKPT_SCRIPT}" "${LOAD_CKPT}")"
+  echo "[train-flat] resolved checkpoint: ${RESOLVED_LOAD_CKPT}"
+  CKPT_ARG="${RESOLVED_LOAD_CKPT}"
+  if [ -d "${RESOLVED_LOAD_CKPT}" ]; then
+    CKPT_BASE="$(basename "${RESOLVED_LOAD_CKPT}")"
+    if echo "${CKPT_BASE}" | grep -Eq '^[0-9]+$'; then
       # train_jax_ppo expects a directory whose children are step directories.
       WRAP_DIR="${ROOT_DIR}/.resume_ckpt_flat"
       rm -rf "${WRAP_DIR}"
       mkdir -p "${WRAP_DIR}"
-      if ln -s "${LOAD_CKPT}" "${WRAP_DIR}/${CKPT_BASE}" 2>/dev/null; then
+      if ln -s "${RESOLVED_LOAD_CKPT}" "${WRAP_DIR}/${CKPT_BASE}" 2>/dev/null; then
         :
       else
-        cp -a "${LOAD_CKPT}" "${WRAP_DIR}/${CKPT_BASE}"
+        cp -a "${RESOLVED_LOAD_CKPT}" "${WRAP_DIR}/${CKPT_BASE}"
       fi
       CKPT_ARG="${WRAP_DIR}"
-      echo "[train-flat] wrapped checkpoint step dir ${LOAD_CKPT} as ${CKPT_ARG}/${CKPT_BASE}"
+      echo "[train-flat] wrapped checkpoint step dir ${RESOLVED_LOAD_CKPT} as ${CKPT_ARG}/${CKPT_BASE}"
     fi
   fi
   CMD+=(--load_checkpoint_path="${CKPT_ARG}")

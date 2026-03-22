@@ -1,6 +1,7 @@
 .venv/
 mujoco_playground/
 logs/
+.resume_ckpt_*/
 *.mp4
 *.zip
 __pycache__/

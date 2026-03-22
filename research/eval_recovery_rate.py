@@ -168,6 +168,10 @@ def _evaluate_one_magnitude(
   total_success = 0
   total_no_push = 0
   total_eval = 0
+  total_episode_reward_all = 0.0
+  total_episode_reward_eval = 0.0
+  total_post_push_reward = 0.0
+  total_survival_steps_after_push = 0
   remaining = episodes
   rng = jax.random.PRNGKey(seed)
 
@@ -183,6 +187,10 @@ def _evaluate_one_magnitude(
     pushed = np.zeros((n,), dtype=bool)
     failed_after_push = np.zeros((n,), dtype=bool)
     window_left = np.zeros((n,), dtype=np.int32)
+    done_seen = np.zeros((n,), dtype=bool)
+    episode_reward = np.zeros((n,), dtype=np.float64)
+    post_push_reward = np.zeros((n,), dtype=np.float64)
+    survival_steps_after_push = np.zeros((n,), dtype=np.int32)
 
     for _ in range(episode_length):
       split_keys = v_split(act_keys)
@@ -192,7 +200,14 @@ def _evaluate_one_magnitude(
       action = v_act(state.obs, sample_keys)
       state = v_step(state, action)
 
+      reward = np.asarray(state.reward, dtype=np.float64)
+      if reward.ndim == 0:
+        reward = np.full((n,), float(reward), dtype=np.float64)
+      else:
+        reward = reward.reshape(n)
       done = np.asarray(state.done) > 0.5
+      active = ~done_seen
+      episode_reward[active] += reward[active]
       push_vec = state.info.get("push", None) if hasattr(state.info, "get") else None
       if push_vec is None:
         # Some env variants do not expose push vectors in state.info.
@@ -214,15 +229,23 @@ def _evaluate_one_magnitude(
 
       active_window = window_left > 0
       failed_after_push[active_window & done] = True
+      post_push_reward[active_window & active] += reward[active_window & active]
+      survival_steps_after_push[active_window & active & (~done)] += 1
       window_left[active_window] -= 1
+      done_seen |= done
 
       if np.all(pushed) and np.all(window_left <= 0):
         break
 
     no_push = int((~pushed).sum())
     success = pushed & (~failed_after_push)
+    eval_mask = np.ones((n,), dtype=bool) if include_no_push_as_fail else pushed
 
     total_no_push += no_push
+    total_episode_reward_all += float(episode_reward.sum())
+    total_episode_reward_eval += float(episode_reward[eval_mask].sum())
+    total_post_push_reward += float(post_push_reward[pushed].sum())
+    total_survival_steps_after_push += int(survival_steps_after_push[pushed].sum())
     if include_no_push_as_fail:
       total_eval += n
       total_success += int(success.sum())
@@ -236,11 +259,31 @@ def _evaluate_one_magnitude(
       "episodes_requested": episodes,
       "episodes_evaluated": total_eval,
       "successes": total_success,
+      "falls_after_push": int(total_eval - total_success),
       "recovery_rate": rate,
       "no_push_episodes": total_no_push,
       "recovery_window_s": recovery_window_s,
       "recovery_window_steps": recovery_window_steps,
       "episode_length": episode_length,
+      "mean_episode_reward_all": (
+          float(total_episode_reward_all / episodes) if episodes > 0 else 0.0
+      ),
+      "mean_episode_reward_eval": (
+          float(total_episode_reward_eval / total_eval) if total_eval > 0 else 0.0
+      ),
+      "mean_post_push_reward": (
+          float(total_post_push_reward / total_eval) if total_eval > 0 else 0.0
+      ),
+      "mean_survival_steps_after_push": (
+          float(total_survival_steps_after_push / total_eval)
+          if total_eval > 0
+          else 0.0
+      ),
+      "mean_survival_time_s_after_push": (
+          float(total_survival_steps_after_push / total_eval) * float(env.dt)
+          if total_eval > 0
+          else 0.0
+      ),
   }
 
 
@@ -349,6 +392,8 @@ def main() -> None:
         "[eval] magnitude="
         f"{mag:.3f} recovery_rate={result['recovery_rate']:.4f} "
         f"successes={result['successes']}/{result['episodes_evaluated']} "
+        f"mean_reward={result['mean_episode_reward_eval']:.3f} "
+        f"mean_post_push_reward={result['mean_post_push_reward']:.3f} "
         f"no_push={result['no_push_episodes']}"
     )
 
@@ -377,12 +422,18 @@ def main() -> None:
             "push_magnitude",
             "recovery_rate",
             "successes",
+            "falls_after_push",
             "episodes_evaluated",
             "episodes_requested",
             "no_push_episodes",
             "recovery_window_s",
             "recovery_window_steps",
             "episode_length",
+            "mean_episode_reward_all",
+            "mean_episode_reward_eval",
+            "mean_post_push_reward",
+            "mean_survival_steps_after_push",
+            "mean_survival_time_s_after_push",
         ],
     )
     writer.writeheader()

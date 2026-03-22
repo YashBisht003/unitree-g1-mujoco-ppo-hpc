@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${ROOT_DIR}/.venv"
 PLAYGROUND_DIR="${ROOT_DIR}/mujoco_playground"
+RESOLVE_CKPT_SCRIPT="${ROOT_DIR}/scripts/resolve_ppo_checkpoint.sh"
 
 if [ ! -d "${VENV_DIR}" ]; then
   echo "ERROR: missing ${VENV_DIR}. Run: bash scripts/bootstrap_env.sh"
@@ -80,11 +81,25 @@ PUSH_MASK_WINDOW_K="${PUSH_MASK_WINDOW_K:-20}"    # used by stateful source
 PUSH_EVENT_EPS="${PUSH_EVENT_EPS:-1e-6}"
 PUSH_ENTROPY_MODE="${PUSH_ENTROPY_MODE:-off}"     # off|post_push_additive
 PUSH_ENTROPY_DELTA="${PUSH_ENTROPY_DELTA:-0.0}"
-PUSH_REWARD_MODE="${PUSH_REWARD_MODE:-off}"  # off|recovery_window
+PUSH_REWARD_MODE="${PUSH_REWARD_MODE:-force_adaptive}"  # off|recovery_window|force_adaptive
 RECOVERY_WINDOW_K="${RECOVERY_WINDOW_K:-60}"
-RECOVERY_WINDOW_TRACKING_SCALE="${RECOVERY_WINDOW_TRACKING_SCALE:-0.2}"
+RECOVERY_WINDOW_TRACKING_SCALE="${RECOVERY_WINDOW_TRACKING_SCALE:-0.3}"
+RECOVERY_WINDOW_TRACKING_SCALE_MIN="${RECOVERY_WINDOW_TRACKING_SCALE_MIN:-0.1}"
 RECOVERY_OMEGA_WEIGHT="${RECOVERY_OMEGA_WEIGHT:-0.05}"
-RECOVERY_BONUS="${RECOVERY_BONUS:-8.0}"
+RECOVERY_ANG_MOM_WEIGHT="${RECOVERY_ANG_MOM_WEIGHT:-1.0}"
+RECOVERY_ANG_MOM_SEVERITY_SCALE="${RECOVERY_ANG_MOM_SEVERITY_SCALE:-0.5}"
+RECOVERY_ANG_MOM_SIGMA="${RECOVERY_ANG_MOM_SIGMA:-1.5}"
+RECOVERY_UPRIGHT_WEIGHT="${RECOVERY_UPRIGHT_WEIGHT:-1.5}"
+RECOVERY_UPRIGHT_SEVERITY_SCALE="${RECOVERY_UPRIGHT_SEVERITY_SCALE:-0.5}"
+RECOVERY_UPRIGHT_SIGMA="${RECOVERY_UPRIGHT_SIGMA:-0.2}"
+RECOVERY_COM_WEIGHT="${RECOVERY_COM_WEIGHT:-1.0}"
+RECOVERY_COM_SEVERITY_SCALE="${RECOVERY_COM_SEVERITY_SCALE:-0.5}"
+RECOVERY_COM_SIGMA="${RECOVERY_COM_SIGMA:-0.5}"
+RECOVERY_STEP_WEIGHT="${RECOVERY_STEP_WEIGHT:-0.8}"
+RECOVERY_STEP_AIR_TIME_MIN="${RECOVERY_STEP_AIR_TIME_MIN:-0.15}"
+RECOVERY_SURVIVAL_WEIGHT="${RECOVERY_SURVIVAL_WEIGHT:-0.25}"
+RECOVERY_BONUS="${RECOVERY_BONUS:-4.0}"
+RECOVERY_BONUS_SEVERITY_SCALE="${RECOVERY_BONUS_SEVERITY_SCALE:-4.0}"
 RECOVERY_BONUS_STABILITY_STEPS="${RECOVERY_BONUS_STABILITY_STEPS:-10}"
 RECOVERY_BONUS_DELAY_STEPS="${RECOVERY_BONUS_DELAY_STEPS:-10}"
 RECOVERY_STABLE_LIN_MIN="${RECOVERY_STABLE_LIN_MIN:-0.7}"
@@ -148,8 +163,22 @@ base["recovery_reward"].update({
   "mode": "${PUSH_REWARD_MODE}",
   "window_steps": int("${RECOVERY_WINDOW_K}"),
   "tracking_scale": float("${RECOVERY_WINDOW_TRACKING_SCALE}"),
+  "tracking_scale_min": float("${RECOVERY_WINDOW_TRACKING_SCALE_MIN}"),
   "omega_weight": float("${RECOVERY_OMEGA_WEIGHT}"),
+  "ang_mom_weight": float("${RECOVERY_ANG_MOM_WEIGHT}"),
+  "ang_mom_severity_scale": float("${RECOVERY_ANG_MOM_SEVERITY_SCALE}"),
+  "ang_mom_sigma": float("${RECOVERY_ANG_MOM_SIGMA}"),
+  "upright_weight": float("${RECOVERY_UPRIGHT_WEIGHT}"),
+  "upright_severity_scale": float("${RECOVERY_UPRIGHT_SEVERITY_SCALE}"),
+  "upright_sigma": float("${RECOVERY_UPRIGHT_SIGMA}"),
+  "com_weight": float("${RECOVERY_COM_WEIGHT}"),
+  "com_severity_scale": float("${RECOVERY_COM_SEVERITY_SCALE}"),
+  "com_sigma": float("${RECOVERY_COM_SIGMA}"),
+  "step_weight": float("${RECOVERY_STEP_WEIGHT}"),
+  "step_air_time_min": float("${RECOVERY_STEP_AIR_TIME_MIN}"),
+  "survival_weight": float("${RECOVERY_SURVIVAL_WEIGHT}"),
   "bonus": float("${RECOVERY_BONUS}"),
+  "bonus_severity_scale": float("${RECOVERY_BONUS_SEVERITY_SCALE}"),
   "bonus_stability_steps": int("${RECOVERY_BONUS_STABILITY_STEPS}"),
   "bonus_delay_steps": int("${RECOVERY_BONUS_DELAY_STEPS}"),
   "stable_lin_tracking_min": float("${RECOVERY_STABLE_LIN_MIN}"),
@@ -197,29 +226,28 @@ if [ -n "${PLAYGROUND_CONFIG_OVERRIDES:-}" ]; then
   CMD+=(--playground_config_overrides="${PLAYGROUND_CONFIG_OVERRIDES}")
 fi
 
-CKPT_ARG="${ROUGH_CKPT}"
-if [ -d "${ROUGH_CKPT}" ]; then
-  CKPT_BASE="$(basename "${ROUGH_CKPT}")"
-  HAS_CHILD_DIR=0
-  if find "${ROUGH_CKPT}" -mindepth 1 -maxdepth 1 -type d | read -r _; then
-    HAS_CHILD_DIR=1
-  fi
-  if echo "${CKPT_BASE}" | grep -Eq '^[0-9]+$' && [ "${HAS_CHILD_DIR}" = "0" ]; then
+RESOLVED_ROUGH_CKPT="$("${RESOLVE_CKPT_SCRIPT}" "${ROUGH_CKPT}")"
+echo "[train-push] resolved rough checkpoint: ${RESOLVED_ROUGH_CKPT}"
+
+CKPT_ARG="${RESOLVED_ROUGH_CKPT}"
+if [ -d "${RESOLVED_ROUGH_CKPT}" ]; then
+  CKPT_BASE="$(basename "${RESOLVED_ROUGH_CKPT}")"
+  if echo "${CKPT_BASE}" | grep -Eq '^[0-9]+$'; then
     WRAP_DIR="${ROOT_DIR}/.resume_ckpt_push"
     rm -rf "${WRAP_DIR}"
     mkdir -p "${WRAP_DIR}"
-    if ln -s "${ROUGH_CKPT}" "${WRAP_DIR}/${CKPT_BASE}" 2>/dev/null; then
+    if ln -s "${RESOLVED_ROUGH_CKPT}" "${WRAP_DIR}/${CKPT_BASE}" 2>/dev/null; then
       :
     else
-      cp -a "${ROUGH_CKPT}" "${WRAP_DIR}/${CKPT_BASE}"
+      cp -a "${RESOLVED_ROUGH_CKPT}" "${WRAP_DIR}/${CKPT_BASE}"
     fi
     CKPT_ARG="${WRAP_DIR}"
-    echo "[train-push] wrapped checkpoint step dir ${ROUGH_CKPT} as ${CKPT_ARG}/${CKPT_BASE}"
+    echo "[train-push] wrapped checkpoint step dir ${RESOLVED_ROUGH_CKPT} as ${CKPT_ARG}/${CKPT_BASE}"
   fi
 fi
 CMD+=(--load_checkpoint_path="${CKPT_ARG}")
 
-echo "[train-push] mode=${MODE} adv_mode=${ADV_MODE_FLAG} scenario_group_size=${SCENARIO_GROUP_SIZE} push_adv_mask_mode=${PUSH_ADV_MASK_MODE} push_mask_source=${PUSH_MASK_SOURCE} push_mask_window_k=${PUSH_MASK_WINDOW_K} push_entropy_mode=${PUSH_ENTROPY_MODE}"
+echo "[train-push] mode=${MODE} adv_mode=${ADV_MODE_FLAG} scenario_group_size=${SCENARIO_GROUP_SIZE} push_adv_mask_mode=${PUSH_ADV_MASK_MODE} push_mask_source=${PUSH_MASK_SOURCE} push_mask_window_k=${PUSH_MASK_WINDOW_K} push_entropy_mode=${PUSH_ENTROPY_MODE} push_reward_mode=${PUSH_REWARD_MODE}"
 if [ -n "${PLAYGROUND_CONFIG_OVERRIDES:-}" ]; then
   echo "[train-push] playground_config_overrides=${PLAYGROUND_CONFIG_OVERRIDES}"
 fi

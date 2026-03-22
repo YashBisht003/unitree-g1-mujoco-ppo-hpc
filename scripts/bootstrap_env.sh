@@ -182,6 +182,40 @@ else:
 PY
 }
 
+apply_brax_checkpoint_restore_compat_shim() {
+  local target
+  target="$(find "${VENV_DIR}" -path '*/site-packages/brax/training/checkpoint.py' 2>/dev/null | head -n 1 || true)"
+  if [ -z "${target}" ] || [ ! -f "${target}" ]; then
+    echo "[bootstrap] warning: Brax checkpoint.py not found; skipping restore compat shim."
+    return 0
+  fi
+  "${PYTHON_BIN}" - <<'PY' "${target}"
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+marker = "__codex_brax_checkpoint_restore_v1__"
+
+if marker in text:
+  print("[bootstrap] Brax checkpoint restore compat shim already present")
+  raise SystemExit(0)
+
+old = """  metadata = ocp.PyTreeCheckpointer().metadata(path)\n  restore_args = jax.tree.map(\n      lambda _: ocp.RestoreArgs(restore_type=np.ndarray), metadata\n  )\n"""
+new = """  metadata = ocp.PyTreeCheckpointer().metadata(path)\n  metadata_tree = getattr(getattr(metadata, 'item_metadata', None), 'tree', metadata)\n  restore_args = jax.tree.map(\n      lambda _: ocp.RestoreArgs(restore_type=np.ndarray), metadata_tree\n  )\n  # __codex_brax_checkpoint_restore_v1__\n"""
+
+if old not in text:
+  if "metadata_tree = getattr(getattr(metadata, 'item_metadata', None), 'tree', metadata)" in text:
+    print("[bootstrap] Brax checkpoint restore compat shim already satisfied")
+    raise SystemExit(0)
+  print(f"[bootstrap] warning: restore compat anchor not found in {path}")
+  raise SystemExit(0)
+
+path.write_text(text.replace(old, new, 1))
+print(f"[bootstrap] installed Brax checkpoint restore compat shim at {path}")
+PY
+}
+
 apply_g1_recovery_reward_shim() {
   local target="${PLAYGROUND_DIR}/mujoco_playground/_src/locomotion/g1/joystick.py"
   if [ ! -f "${target}" ]; then
@@ -196,10 +230,13 @@ import sys
 
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-marker = "__codex_g1_recovery_reward_v3__"
+marker = "__codex_g1_recovery_reward_v5__"
 if marker in text:
   print("[bootstrap] G1 recovery-reward shim already present")
   raise SystemExit(0)
+
+text = text.replace("# __codex_g1_recovery_reward_v3__\n", "")
+text = text.replace("# __codex_g1_recovery_reward_v4__\n", "")
 
 if "class Joystick(g1_base.G1Env):" not in text:
   print("[bootstrap] G1 joystick layout not recognized; skipping recovery-reward shim")
@@ -218,15 +255,46 @@ if "recovery_ang_mom=1.0" not in text:
       1,
   )
 
+if "recovery_upright=1.0" not in text:
+  anchor = "              recovery_bonus=1.0,\n"
+  if anchor not in text:
+    anchor = "              tracking_ang_vel=0.75,\n"
+  if anchor not in text:
+    print("[bootstrap] failed to insert force-adaptive recovery scales; skipping")
+    raise SystemExit(0)
+  text = text.replace(
+      anchor,
+      anchor
+      + "              recovery_upright=1.0,\n"
+      + "              recovery_com_vel=1.0,\n"
+      + "              recovery_step=1.0,\n"
+      + "              recovery_survival=1.0,\n",
+      1,
+  )
+
 if "recovery_reward=config_dict.create(" not in text:
   recovery_block = """
       recovery_reward=config_dict.create(
-          mode="off",  # off|recovery_window
+          mode="off",  # off|recovery_window|force_adaptive
           window_steps=60,
           push_mask_window_steps=20,
-          tracking_scale=0.2,
+          tracking_scale=0.3,
+          tracking_scale_min=0.1,
           omega_weight=0.05,
-          bonus=8.0,
+          ang_mom_weight=1.0,
+          ang_mom_severity_scale=0.5,
+          ang_mom_sigma=1.5,
+          upright_weight=1.5,
+          upright_severity_scale=0.5,
+          upright_sigma=0.2,
+          com_weight=1.0,
+          com_severity_scale=0.5,
+          com_sigma=0.5,
+          step_weight=0.8,
+          step_air_time_min=0.15,
+          survival_weight=0.25,
+          bonus=4.0,
+          bonus_severity_scale=4.0,
           bonus_stability_steps=10,
           bonus_delay_steps=10,
           stable_lin_tracking_min=0.7,
@@ -252,6 +320,83 @@ if "push_mask_window_steps=" not in text:
       1,
   )
 
+text = text.replace(
+    '          mode="off",  # off|recovery_window\n',
+    '          mode="off",  # off|recovery_window|force_adaptive\n',
+)
+
+if "tracking_scale_min=" not in text:
+  if '          tracking_scale=0.2,\n' in text:
+    text = text.replace(
+        '          tracking_scale=0.2,\n',
+        '          tracking_scale=0.3,\n'
+        '          tracking_scale_min=0.1,\n',
+        1,
+    )
+  else:
+    text = text.replace(
+        '          tracking_scale=0.3,\n',
+        '          tracking_scale=0.3,\n'
+        '          tracking_scale_min=0.1,\n',
+        1,
+    )
+
+if "ang_mom_weight=" not in text:
+  text = text.replace(
+      '          omega_weight=0.05,\n',
+      '          omega_weight=0.05,\n'
+      '          ang_mom_weight=1.0,\n'
+      '          ang_mom_severity_scale=0.5,\n'
+      '          ang_mom_sigma=1.5,\n',
+      1,
+  )
+
+if "upright_weight=" not in text:
+  text = text.replace(
+      '          ang_mom_sigma=1.5,\n',
+      '          ang_mom_sigma=1.5,\n'
+      '          upright_weight=1.5,\n'
+      '          upright_severity_scale=0.5,\n'
+      '          upright_sigma=0.2,\n',
+      1,
+  )
+
+if "com_weight=" not in text:
+  text = text.replace(
+      '          upright_sigma=0.2,\n',
+      '          upright_sigma=0.2,\n'
+      '          com_weight=1.0,\n'
+      '          com_severity_scale=0.5,\n'
+      '          com_sigma=0.5,\n',
+      1,
+  )
+
+if "step_weight=" not in text:
+  text = text.replace(
+      '          com_sigma=0.5,\n',
+      '          com_sigma=0.5,\n'
+      '          step_weight=0.8,\n'
+      '          step_air_time_min=0.15,\n'
+      '          survival_weight=0.25,\n',
+      1,
+  )
+
+if "bonus_severity_scale=" not in text:
+  if '          bonus=8.0,\n' in text:
+    text = text.replace(
+        '          bonus=8.0,\n',
+        '          bonus=4.0,\n'
+        '          bonus_severity_scale=4.0,\n',
+        1,
+    )
+  else:
+    text = text.replace(
+        '          bonus=4.0,\n',
+        '          bonus=4.0,\n'
+        '          bonus_severity_scale=4.0,\n',
+        1,
+    )
+
 if '"recovery_countdown"' not in text:
   info_anchor = '        "push_interval_steps": push_interval_steps,\n'
   info_insert = (
@@ -263,6 +408,9 @@ if '"recovery_countdown"' not in text:
       '        "in_recovery_window": jp.array(0.0),\n'
       '        "push_mask_countdown": jp.array(0, dtype=jp.int32),\n'
       '        "in_push_mask_window": jp.array(0.0),\n'
+      '        "last_push_magnitude": jp.array(0.0),\n'
+      '        "recovery_severity": jp.array(0.0),\n'
+      '        "steps_since_push": jp.array(0, dtype=jp.int32),\n'
       '        "cp_pending_steps": jp.array(0, dtype=jp.int32),\n'
       '        "cp_valid": jp.array(0.0),\n'
       '        "cp_xy_norm": jp.array(0.0),\n'
@@ -279,9 +427,25 @@ if '"push_mask_countdown"' not in text:
       '        "in_recovery_window": jp.array(0.0),\n'
       '        "push_mask_countdown": jp.array(0, dtype=jp.int32),\n'
       '        "in_push_mask_window": jp.array(0.0),\n'
+      '        "last_push_magnitude": jp.array(0.0),\n'
+      '        "recovery_severity": jp.array(0.0),\n'
+      '        "steps_since_push": jp.array(0, dtype=jp.int32),\n'
   )
   if info_upgrade_anchor not in text:
     print("[bootstrap] failed to insert push-mask info fields; skipping")
+    raise SystemExit(0)
+  text = text.replace(info_upgrade_anchor, info_upgrade_insert, 1)
+
+if '"last_push_magnitude"' not in text:
+  info_upgrade_anchor = '        "in_push_mask_window": jp.array(0.0),\n'
+  info_upgrade_insert = (
+      '        "in_push_mask_window": jp.array(0.0),\n'
+      '        "last_push_magnitude": jp.array(0.0),\n'
+      '        "recovery_severity": jp.array(0.0),\n'
+      '        "steps_since_push": jp.array(0, dtype=jp.int32),\n'
+  )
+  if info_upgrade_anchor not in text:
+    print("[bootstrap] failed to insert recovery severity info fields; skipping")
     raise SystemExit(0)
   text = text.replace(info_upgrade_anchor, info_upgrade_insert, 1)
 
@@ -292,12 +456,28 @@ if 'metrics["diagnostics/recovery_countdown"] = jp.zeros(())' not in text:
       '    metrics["diagnostics/recovery_countdown"] = jp.zeros(())\n'
       '    metrics["diagnostics/in_recovery_window"] = jp.zeros(())\n'
       '    metrics["diagnostics/recovery_bonus_flag"] = jp.zeros(())\n'
+      '    metrics["diagnostics/last_push_magnitude"] = jp.zeros(())\n'
+      '    metrics["diagnostics/recovery_severity"] = jp.zeros(())\n'
+      '    metrics["diagnostics/steps_since_push"] = jp.zeros(())\n'
       '    metrics["diagnostics/cp_valid"] = jp.zeros(())\n'
       '    metrics["diagnostics/cp_xy_norm"] = jp.zeros(())\n'
       '    metrics["diagnostics/cp_fail_window"] = jp.zeros(())\n'
   )
   if reset_metrics_anchor not in text:
     print("[bootstrap] failed to initialize recovery diagnostics metrics; skipping")
+    raise SystemExit(0)
+  text = text.replace(reset_metrics_anchor, reset_metrics_insert, 1)
+
+if 'metrics["diagnostics/last_push_magnitude"] = jp.zeros(())' not in text:
+  reset_metrics_anchor = '    metrics["diagnostics/recovery_bonus_flag"] = jp.zeros(())\n'
+  reset_metrics_insert = (
+      '    metrics["diagnostics/recovery_bonus_flag"] = jp.zeros(())\n'
+      '    metrics["diagnostics/last_push_magnitude"] = jp.zeros(())\n'
+      '    metrics["diagnostics/recovery_severity"] = jp.zeros(())\n'
+      '    metrics["diagnostics/steps_since_push"] = jp.zeros(())\n'
+  )
+  if reset_metrics_anchor not in text:
+    print("[bootstrap] failed to upgrade recovery diagnostics metrics; skipping")
     raise SystemExit(0)
   text = text.replace(reset_metrics_anchor, reset_metrics_insert, 1)
 
@@ -312,17 +492,29 @@ if "push_event = jp.linalg.norm(push) > 0" not in text:
       1,
   )
 
-old_block = """    done = self._get_termination(data)
-
-    rewards = self._get_reward(
-        data, action, state.info, state.metrics, done, first_contact, contact
-    )
-"""
+step_pattern = re.compile(
+    r'''    done = self\._get_termination\(data\)\n(?:[\s\S]*?)    rewards = self\._get_reward\(\n        data, action, state\.info, state\.metrics, done, first_contact, contact\n    \)\n''',
+    re.MULTILINE,
+)
 new_block = """    done = self._get_termination(data)
 
     rec_cfg = self._config.recovery_reward
-    recovery_enabled = rec_cfg.mode == "recovery_window"
-    total_recovery_steps = rec_cfg.window_steps + rec_cfg.bonus_delay_steps
+    recovery_enabled = rec_cfg.mode in ("recovery_window", "force_adaptive")
+    window_steps = int(getattr(rec_cfg, "window_steps", 60))
+    bonus_delay_steps = int(getattr(rec_cfg, "bonus_delay_steps", 10))
+    bonus_stability_steps = int(getattr(rec_cfg, "bonus_stability_steps", 10))
+    push_mask_window_steps = int(getattr(rec_cfg, "push_mask_window_steps", 20))
+    stable_lin_min = float(getattr(rec_cfg, "stable_lin_tracking_min", 0.7))
+    stable_ang_min = float(getattr(rec_cfg, "stable_ang_tracking_min", 0.7))
+    upright_sigma = float(getattr(rec_cfg, "upright_sigma", 0.2))
+    capture_point_log = bool(getattr(rec_cfg, "capture_point_log", False))
+    total_recovery_steps = window_steps + bonus_delay_steps
+    push_mag = jp.linalg.norm(push)
+    push_min = jp.array(self._config.push_config.magnitude_range[0], dtype=push_mag.dtype)
+    push_max = jp.array(self._config.push_config.magnitude_range[1], dtype=push_mag.dtype)
+    push_span = jp.maximum(push_max - push_min, jp.array(1e-6, dtype=push_mag.dtype))
+    push_severity_now = jp.clip((push_mag - push_min) / push_span, 0.0, 1.0)
+
     prev_countdown = state.info["recovery_countdown"]
     recovery_countdown = jp.where(
         recovery_enabled & push_event,
@@ -330,10 +522,10 @@ new_block = """    done = self._get_termination(data)
         jp.maximum(prev_countdown - 1, 0),
     )
     in_recovery_window = recovery_enabled & (
-        recovery_countdown > rec_cfg.bonus_delay_steps
+        recovery_countdown > bonus_delay_steps
     )
     mask_window_steps = jp.maximum(
-        1, jp.array(rec_cfg.push_mask_window_steps, dtype=jp.int32)
+        1, jp.array(push_mask_window_steps, dtype=jp.int32)
     )
     push_mask_countdown = jp.where(
         push_event,
@@ -341,6 +533,29 @@ new_block = """    done = self._get_termination(data)
         jp.maximum(state.info["push_mask_countdown"] - 1, 0),
     )
     in_push_mask_window = push_mask_countdown > 0
+    active_recovery_state = (recovery_countdown > 0) | (push_mask_countdown > 0)
+
+    last_push_magnitude = jp.where(
+        push_event, push_mag.astype(jp.float32), state.info["last_push_magnitude"]
+    )
+    recovery_severity = jp.where(
+        push_event,
+        push_severity_now.astype(jp.float32),
+        jp.where(
+            active_recovery_state,
+            state.info["recovery_severity"],
+            jp.array(0.0, dtype=jp.float32),
+        ),
+    )
+    steps_since_push = jp.where(
+        push_event,
+        jp.array(0, dtype=jp.int32),
+        jp.where(
+            active_recovery_state,
+            state.info["steps_since_push"] + 1,
+            jp.array(0, dtype=jp.int32),
+        ),
+    )
 
     lin_track_for_bonus = self._reward_tracking_lin_vel(
         state.info["command"], self.get_local_linvel(data, "pelvis")
@@ -348,13 +563,21 @@ new_block = """    done = self._get_termination(data)
     ang_track_for_bonus = self._reward_tracking_ang_vel(
         state.info["command"], self.get_gyro(data, "pelvis")
     )
+    gravity_xy = self.get_gravity(data, "torso")[0:2]
+    upright_for_bonus = jp.exp(
+        -jp.square(
+            jp.linalg.norm(gravity_xy)
+            / jp.maximum(upright_sigma, jp.array(1e-3, dtype=gravity_xy.dtype))
+        )
+    )
     stable_step = (
-        (lin_track_for_bonus >= rec_cfg.stable_lin_tracking_min)
-        & (ang_track_for_bonus >= rec_cfg.stable_ang_tracking_min)
+        (lin_track_for_bonus >= stable_lin_min)
+        & (ang_track_for_bonus >= stable_ang_min)
+        & (upright_for_bonus >= 0.9)
         & (~done)
     )
     bonus_phase = recovery_enabled & (recovery_countdown > 0) & (
-        recovery_countdown <= rec_cfg.bonus_delay_steps
+        recovery_countdown <= bonus_delay_steps
     )
 
     recovery_survived = jp.where(
@@ -381,10 +604,10 @@ new_block = """    done = self._get_termination(data)
         recovery_enabled
         & (recovery_countdown == 1)
         & (recovery_survived > 0.5)
-        & (recovery_stable_steps >= rec_cfg.bonus_stability_steps)
+        & (recovery_stable_steps >= bonus_stability_steps)
     )
 
-    cp_log_enabled = recovery_enabled & rec_cfg.capture_point_log
+    cp_log_enabled = recovery_enabled & capture_point_log
     cp_omega0 = jp.sqrt(
         9.81 / jp.maximum(0.2, self._config.reward_config.base_height_target)
     )
@@ -417,6 +640,9 @@ new_block = """    done = self._get_termination(data)
     state.info["in_recovery_window"] = in_recovery_window.astype(jp.float32)
     state.info["push_mask_countdown"] = push_mask_countdown
     state.info["in_push_mask_window"] = in_push_mask_window.astype(jp.float32)
+    state.info["last_push_magnitude"] = last_push_magnitude
+    state.info["recovery_severity"] = recovery_severity
+    state.info["steps_since_push"] = steps_since_push
     state.info["recovery_survived"] = recovery_survived
     state.info["recovery_stable_steps"] = recovery_stable_steps
     state.info["recovery_bonus_flag"] = recovery_bonus_flag.astype(jp.float32)
@@ -429,44 +655,8 @@ new_block = """    done = self._get_termination(data)
         data, action, state.info, state.metrics, done, first_contact, contact
     )
 """
-if old_block in text:
-  text = text.replace(old_block, new_block, 1)
-elif "rec_cfg = self._config.recovery_reward" in text and "state.info[\"recovery_countdown\"] = recovery_countdown" in text:
-  if "push_mask_countdown = jp.where(" not in text:
-    mask_anchor = """    in_recovery_window = recovery_enabled & (
-        recovery_countdown > rec_cfg.bonus_delay_steps
-    )
-"""
-    mask_insert = """    in_recovery_window = recovery_enabled & (
-        recovery_countdown > rec_cfg.bonus_delay_steps
-    )
-    mask_window_steps = jp.maximum(
-        1, jp.array(rec_cfg.push_mask_window_steps, dtype=jp.int32)
-    )
-    push_mask_countdown = jp.where(
-        push_event,
-        mask_window_steps,
-        jp.maximum(state.info["push_mask_countdown"] - 1, 0),
-    )
-    in_push_mask_window = push_mask_countdown > 0
-"""
-    if mask_anchor not in text:
-      print("[bootstrap] failed to patch stateful push-mask logic; skipping")
-      raise SystemExit(0)
-    text = text.replace(mask_anchor, mask_insert, 1)
-
-  if 'state.info["push_mask_countdown"] = push_mask_countdown' not in text:
-    mask_state_anchor = '    state.info["in_recovery_window"] = in_recovery_window.astype(jp.float32)\n'
-    mask_state_insert = (
-        '    state.info["in_recovery_window"] = in_recovery_window.astype(jp.float32)\n'
-        '    state.info["push_mask_countdown"] = push_mask_countdown\n'
-        '    state.info["in_push_mask_window"] = in_push_mask_window.astype(jp.float32)\n'
-    )
-    if mask_state_anchor not in text:
-      print("[bootstrap] failed to patch stateful push-mask state fields; skipping")
-      raise SystemExit(0)
-    text = text.replace(mask_state_anchor, mask_state_insert, 1)
-else:
+text, step_replacements = step_pattern.subn(new_block, text, count=1)
+if step_replacements == 0:
   print("[bootstrap] failed to patch step recovery logic; skipping")
   raise SystemExit(0)
 
@@ -544,8 +734,11 @@ new_reward_fn = '''
     }
 
     if self._config.recovery_reward.mode == "recovery_window":
+      rec_cfg = self._config.recovery_reward
       in_window = info["in_recovery_window"] > 0.5
-      track_scale = self._config.recovery_reward.tracking_scale
+      track_scale = float(getattr(rec_cfg, "tracking_scale", 0.2))
+      omega_weight = float(getattr(rec_cfg, "omega_weight", 0.05))
+      bonus = float(getattr(rec_cfg, "bonus", 8.0))
       rewards["tracking_lin_vel"] = jp.where(
           in_window,
           rewards["tracking_lin_vel"] * track_scale,
@@ -558,16 +751,122 @@ new_reward_fn = '''
       )
       rewards["recovery_ang_mom"] = jp.where(
           in_window,
-          -self._config.recovery_reward.omega_weight
-          * self._cost_ang_vel_xy(self.get_global_angvel(data, "torso")),
+          -omega_weight * self._cost_ang_vel_xy(self.get_global_angvel(data, "torso")),
+          jp.array(0.0),
+      )
+      rewards["recovery_bonus"] = bonus * info["recovery_bonus_flag"]
+      rewards["recovery_upright"] = jp.array(0.0)
+      rewards["recovery_com_vel"] = jp.array(0.0)
+      rewards["recovery_step"] = jp.array(0.0)
+      rewards["recovery_survival"] = jp.array(0.0)
+    elif self._config.recovery_reward.mode == "force_adaptive":
+      rec_cfg = self._config.recovery_reward
+      in_window = info["in_recovery_window"] > 0.5
+      severity = jp.clip(info["recovery_severity"], 0.0, 1.0)
+      track_scale_max = float(getattr(rec_cfg, "tracking_scale", 0.3))
+      track_scale_min = float(getattr(rec_cfg, "tracking_scale_min", 0.1))
+      upright_weight = float(getattr(rec_cfg, "upright_weight", 1.5))
+      upright_severity_scale = float(
+          getattr(rec_cfg, "upright_severity_scale", 0.5)
+      )
+      upright_sigma = float(getattr(rec_cfg, "upright_sigma", 0.2))
+      com_weight = float(getattr(rec_cfg, "com_weight", 1.0))
+      com_severity_scale = float(getattr(rec_cfg, "com_severity_scale", 0.5))
+      com_sigma = float(getattr(rec_cfg, "com_sigma", 0.5))
+      ang_mom_weight = float(getattr(rec_cfg, "ang_mom_weight", 1.0))
+      ang_mom_severity_scale = float(
+          getattr(rec_cfg, "ang_mom_severity_scale", 0.5)
+      )
+      ang_mom_sigma = float(getattr(rec_cfg, "ang_mom_sigma", 1.5))
+      step_weight = float(getattr(rec_cfg, "step_weight", 0.8))
+      step_air_time_min = float(getattr(rec_cfg, "step_air_time_min", 0.15))
+      survival_weight = float(getattr(rec_cfg, "survival_weight", 0.25))
+      bonus = float(getattr(rec_cfg, "bonus", 4.0))
+      bonus_severity_scale = float(getattr(rec_cfg, "bonus_severity_scale", 4.0))
+      push_mask_window_steps = int(getattr(rec_cfg, "push_mask_window_steps", 20))
+      tracking_scale = track_scale_max - severity * (
+          track_scale_max - track_scale_min
+      )
+      tracking_scale = jp.clip(
+          tracking_scale, track_scale_min, track_scale_max
+      )
+      rewards["tracking_lin_vel"] = jp.where(
+          in_window,
+          rewards["tracking_lin_vel"] * tracking_scale,
+          rewards["tracking_lin_vel"],
+      )
+      rewards["tracking_ang_vel"] = jp.where(
+          in_window,
+          rewards["tracking_ang_vel"] * tracking_scale,
+          rewards["tracking_ang_vel"],
+      )
+
+      gravity_xy = self.get_gravity(data, "torso")[0:2]
+      upright = jp.exp(
+          -jp.square(
+              jp.linalg.norm(gravity_xy)
+              / jp.maximum(upright_sigma, jp.array(1e-3, dtype=gravity_xy.dtype))
+          )
+      )
+      local_linvel_xy = self.get_local_linvel(data, "pelvis")[0:2]
+      command_xy = info["command"][0:2]
+      com_vel = jp.exp(
+          -jp.square(
+              jp.linalg.norm(local_linvel_xy - command_xy)
+              / jp.maximum(com_sigma, jp.array(1e-3, dtype=local_linvel_xy.dtype))
+          )
+      )
+      ang_xy = self.get_global_angvel(data, "torso")[0:2]
+      ang_mom = jp.exp(
+          -jp.square(
+              jp.linalg.norm(ang_xy)
+              / jp.maximum(ang_mom_sigma, jp.array(1e-3, dtype=ang_xy.dtype))
+          )
+      )
+      landing = first_contact.astype(jp.float32)
+      air_time_ready = (
+          info["feet_air_time"] >= step_air_time_min
+      ).astype(jp.float32)
+      step_active = in_window & (
+          info["steps_since_push"] <= push_mask_window_steps
+      )
+      step_reward = jp.mean(landing * air_time_ready)
+
+      rewards["recovery_ang_mom"] = jp.where(
+          in_window,
+          (ang_mom_weight + ang_mom_severity_scale * severity) * ang_mom,
+          jp.array(0.0),
+      )
+      rewards["recovery_upright"] = jp.where(
+          in_window,
+          (upright_weight + upright_severity_scale * severity) * upright,
+          jp.array(0.0),
+      )
+      rewards["recovery_com_vel"] = jp.where(
+          in_window,
+          (com_weight + com_severity_scale * severity) * com_vel,
+          jp.array(0.0),
+      )
+      rewards["recovery_step"] = jp.where(
+          step_active,
+          step_weight * step_reward,
+          jp.array(0.0),
+      )
+      rewards["recovery_survival"] = jp.where(
+          in_window,
+          survival_weight * (1.0 - done.astype(jp.float32)),
           jp.array(0.0),
       )
       rewards["recovery_bonus"] = (
-          self._config.recovery_reward.bonus * info["recovery_bonus_flag"]
-      )
+          bonus + bonus_severity_scale * severity
+      ) * info["recovery_bonus_flag"]
     else:
       rewards["recovery_ang_mom"] = jp.array(0.0)
       rewards["recovery_bonus"] = jp.array(0.0)
+      rewards["recovery_upright"] = jp.array(0.0)
+      rewards["recovery_com_vel"] = jp.array(0.0)
+      rewards["recovery_step"] = jp.array(0.0)
+      rewards["recovery_survival"] = jp.array(0.0)
     return rewards
 
 '''
@@ -589,6 +888,15 @@ metrics_insert = '''    for k, v in rewards.items():
     state.metrics["diagnostics/recovery_bonus_flag"] = state.info[
         "recovery_bonus_flag"
     ].astype(reward.dtype)
+    state.metrics["diagnostics/last_push_magnitude"] = state.info[
+        "last_push_magnitude"
+    ].astype(reward.dtype)
+    state.metrics["diagnostics/recovery_severity"] = state.info[
+        "recovery_severity"
+    ].astype(reward.dtype)
+    state.metrics["diagnostics/steps_since_push"] = state.info[
+        "steps_since_push"
+    ].astype(reward.dtype)
     state.metrics["diagnostics/cp_valid"] = state.info["cp_valid"].astype(
         reward.dtype
     )
@@ -604,6 +912,29 @@ if "diagnostics/recovery_countdown" not in text:
     print("[bootstrap] failed to insert recovery diagnostics metrics; skipping")
     raise SystemExit(0)
   text = text.replace(metrics_anchor, metrics_insert, 1)
+
+if "diagnostics/last_push_magnitude" not in text:
+  metrics_upgrade_anchor = '''    state.metrics["diagnostics/recovery_bonus_flag"] = state.info[
+        "recovery_bonus_flag"
+    ].astype(reward.dtype)
+'''
+  metrics_upgrade_insert = '''    state.metrics["diagnostics/recovery_bonus_flag"] = state.info[
+        "recovery_bonus_flag"
+    ].astype(reward.dtype)
+    state.metrics["diagnostics/last_push_magnitude"] = state.info[
+        "last_push_magnitude"
+    ].astype(reward.dtype)
+    state.metrics["diagnostics/recovery_severity"] = state.info[
+        "recovery_severity"
+    ].astype(reward.dtype)
+    state.metrics["diagnostics/steps_since_push"] = state.info[
+        "steps_since_push"
+    ].astype(reward.dtype)
+'''
+  if metrics_upgrade_anchor not in text:
+    print("[bootstrap] failed to upgrade recovery diagnostics logging; skipping")
+    raise SystemExit(0)
+  text = text.replace(metrics_upgrade_anchor, metrics_upgrade_insert, 1)
 
 text = text.replace(
     "class Joystick(g1_base.G1Env):",
@@ -630,7 +961,7 @@ import sys
 
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-marker = "__codex_maxrl_scaffold_v10__"
+marker = "__codex_maxrl_scaffold_v11__"
 if marker in text:
   print("[bootstrap] MaxRL scaffold shim already present")
   raise SystemExit(0)
@@ -717,7 +1048,7 @@ _PUSH_ENTROPY_DELTA = flags.DEFINE_float(
 _PUSH_REWARD_MODE = flags.DEFINE_enum(
     "push_reward_mode",
     "off",
-    ["off", "recovery_window"],
+    ["off", "recovery_window", "force_adaptive"],
     "Push-conditioned reward redesign mode.",
 )
 _RECOVERY_WINDOW_K = flags.DEFINE_integer(
@@ -727,18 +1058,88 @@ _RECOVERY_WINDOW_K = flags.DEFINE_integer(
 )
 _RECOVERY_WINDOW_TRACKING_SCALE = flags.DEFINE_float(
     "recovery_window_tracking_scale",
-    0.2,
-    "Tracking reward scale inside recovery window.",
+    0.3,
+    "Max tracking reward scale inside recovery window.",
+)
+_RECOVERY_WINDOW_TRACKING_SCALE_MIN = flags.DEFINE_float(
+    "recovery_window_tracking_scale_min",
+    0.1,
+    "Min tracking reward scale at max push severity.",
 )
 _RECOVERY_OMEGA_WEIGHT = flags.DEFINE_float(
     "recovery_omega_weight",
     0.05,
-    "Post-push angular momentum regularization weight.",
+    "Legacy recovery_window angular momentum regularization weight.",
+)
+_RECOVERY_ANG_MOM_WEIGHT = flags.DEFINE_float(
+    "recovery_ang_mom_weight",
+    1.0,
+    "Base angular-momentum damping reward weight.",
+)
+_RECOVERY_ANG_MOM_SEVERITY_SCALE = flags.DEFINE_float(
+    "recovery_ang_mom_severity_scale",
+    0.5,
+    "Additional angular-momentum damping weight at max push severity.",
+)
+_RECOVERY_ANG_MOM_SIGMA = flags.DEFINE_float(
+    "recovery_ang_mom_sigma",
+    1.5,
+    "Angular-velocity sigma for force-adaptive damping reward.",
+)
+_RECOVERY_UPRIGHT_WEIGHT = flags.DEFINE_float(
+    "recovery_upright_weight",
+    1.5,
+    "Base upright reward weight inside recovery window.",
+)
+_RECOVERY_UPRIGHT_SEVERITY_SCALE = flags.DEFINE_float(
+    "recovery_upright_severity_scale",
+    0.5,
+    "Additional upright reward weight at max push severity.",
+)
+_RECOVERY_UPRIGHT_SIGMA = flags.DEFINE_float(
+    "recovery_upright_sigma",
+    0.2,
+    "Tilt sigma for force-adaptive upright reward.",
+)
+_RECOVERY_COM_WEIGHT = flags.DEFINE_float(
+    "recovery_com_weight",
+    1.0,
+    "Base COM velocity return reward weight.",
+)
+_RECOVERY_COM_SEVERITY_SCALE = flags.DEFINE_float(
+    "recovery_com_severity_scale",
+    0.5,
+    "Additional COM velocity return reward weight at max push severity.",
+)
+_RECOVERY_COM_SIGMA = flags.DEFINE_float(
+    "recovery_com_sigma",
+    0.5,
+    "Velocity-error sigma for COM return reward.",
+)
+_RECOVERY_STEP_WEIGHT = flags.DEFINE_float(
+    "recovery_step_weight",
+    0.8,
+    "Landing reward weight for recovery steps shortly after a push.",
+)
+_RECOVERY_STEP_AIR_TIME_MIN = flags.DEFINE_float(
+    "recovery_step_air_time_min",
+    0.15,
+    "Minimum foot air-time before a landing counts as a recovery step.",
+)
+_RECOVERY_SURVIVAL_WEIGHT = flags.DEFINE_float(
+    "recovery_survival_weight",
+    0.25,
+    "Per-step survival reward inside the recovery window.",
 )
 _RECOVERY_BONUS = flags.DEFINE_float(
     "recovery_bonus",
-    8.0,
+    4.0,
     "Sparse bonus for stable recovery after window end.",
+)
+_RECOVERY_BONUS_SEVERITY_SCALE = flags.DEFINE_float(
+    "recovery_bonus_severity_scale",
+    4.0,
+    "Additional stable-recovery bonus at max push severity.",
 )
 _RECOVERY_BONUS_STABILITY_STEPS = flags.DEFINE_integer(
     "recovery_bonus_stability_steps",
@@ -788,8 +1189,26 @@ def _build_recovery_reward_overrides():
             "mode": _PUSH_REWARD_MODE.value,
             "window_steps": int(_RECOVERY_WINDOW_K.value),
             "tracking_scale": float(_RECOVERY_WINDOW_TRACKING_SCALE.value),
+            "tracking_scale_min": float(_RECOVERY_WINDOW_TRACKING_SCALE_MIN.value),
             "omega_weight": float(_RECOVERY_OMEGA_WEIGHT.value),
+            "ang_mom_weight": float(_RECOVERY_ANG_MOM_WEIGHT.value),
+            "ang_mom_severity_scale": float(
+                _RECOVERY_ANG_MOM_SEVERITY_SCALE.value
+            ),
+            "ang_mom_sigma": float(_RECOVERY_ANG_MOM_SIGMA.value),
+            "upright_weight": float(_RECOVERY_UPRIGHT_WEIGHT.value),
+            "upright_severity_scale": float(
+                _RECOVERY_UPRIGHT_SEVERITY_SCALE.value
+            ),
+            "upright_sigma": float(_RECOVERY_UPRIGHT_SIGMA.value),
+            "com_weight": float(_RECOVERY_COM_WEIGHT.value),
+            "com_severity_scale": float(_RECOVERY_COM_SEVERITY_SCALE.value),
+            "com_sigma": float(_RECOVERY_COM_SIGMA.value),
+            "step_weight": float(_RECOVERY_STEP_WEIGHT.value),
+            "step_air_time_min": float(_RECOVERY_STEP_AIR_TIME_MIN.value),
+            "survival_weight": float(_RECOVERY_SURVIVAL_WEIGHT.value),
             "bonus": float(_RECOVERY_BONUS.value),
+            "bonus_severity_scale": float(_RECOVERY_BONUS_SEVERITY_SCALE.value),
             "bonus_stability_steps": int(_RECOVERY_BONUS_STABILITY_STEPS.value),
             "bonus_delay_steps": int(_RECOVERY_BONUS_DELAY_STEPS.value),
             "stable_lin_tracking_min": float(_RECOVERY_STABLE_LIN_MIN.value),
@@ -1193,8 +1612,11 @@ def _log_maxrl_scaffold_config(num_envs: int) -> None:
     print(
         "[push-reward] mode="
         f"{_PUSH_REWARD_MODE.value}, K={_RECOVERY_WINDOW_K.value}, "
-        f"tracking_scale={_RECOVERY_WINDOW_TRACKING_SCALE.value}, "
-        f"omega_w={_RECOVERY_OMEGA_WEIGHT.value}, bonus={_RECOVERY_BONUS.value}, "
+        f"tracking_scale=[{_RECOVERY_WINDOW_TRACKING_SCALE_MIN.value},"
+        f"{_RECOVERY_WINDOW_TRACKING_SCALE.value}], "
+        f"ang_mom_w={_RECOVERY_ANG_MOM_WEIGHT.value}, "
+        f"survival_w={_RECOVERY_SURVIVAL_WEIGHT.value}, "
+        f"bonus={_RECOVERY_BONUS.value}+{_RECOVERY_BONUS_SEVERITY_SCALE.value}*s, "
         f"stability_steps={_RECOVERY_BONUS_STABILITY_STEPS.value}, "
         f"bonus_delay={_RECOVERY_BONUS_DELAY_STEPS.value}, "
         f"cp_log={_CAPTURE_POINT_LOG.value}"
@@ -1458,7 +1880,7 @@ if "_PUSH_REWARD_MODE = flags.DEFINE_enum(" not in text:
 _PUSH_REWARD_MODE = flags.DEFINE_enum(
     "push_reward_mode",
     "off",
-    ["off", "recovery_window"],
+    ["off", "recovery_window", "force_adaptive"],
     "Push-conditioned reward redesign mode.",
 )
 _RECOVERY_WINDOW_K = flags.DEFINE_integer(
@@ -1468,18 +1890,88 @@ _RECOVERY_WINDOW_K = flags.DEFINE_integer(
 )
 _RECOVERY_WINDOW_TRACKING_SCALE = flags.DEFINE_float(
     "recovery_window_tracking_scale",
-    0.2,
-    "Tracking reward scale inside recovery window.",
+    0.3,
+    "Max tracking reward scale inside recovery window.",
+)
+_RECOVERY_WINDOW_TRACKING_SCALE_MIN = flags.DEFINE_float(
+    "recovery_window_tracking_scale_min",
+    0.1,
+    "Min tracking reward scale at max push severity.",
 )
 _RECOVERY_OMEGA_WEIGHT = flags.DEFINE_float(
     "recovery_omega_weight",
     0.05,
-    "Post-push angular momentum regularization weight.",
+    "Legacy recovery_window angular momentum regularization weight.",
+)
+_RECOVERY_ANG_MOM_WEIGHT = flags.DEFINE_float(
+    "recovery_ang_mom_weight",
+    1.0,
+    "Base angular-momentum damping reward weight.",
+)
+_RECOVERY_ANG_MOM_SEVERITY_SCALE = flags.DEFINE_float(
+    "recovery_ang_mom_severity_scale",
+    0.5,
+    "Additional angular-momentum damping weight at max push severity.",
+)
+_RECOVERY_ANG_MOM_SIGMA = flags.DEFINE_float(
+    "recovery_ang_mom_sigma",
+    1.5,
+    "Angular-velocity sigma for force-adaptive damping reward.",
+)
+_RECOVERY_UPRIGHT_WEIGHT = flags.DEFINE_float(
+    "recovery_upright_weight",
+    1.5,
+    "Base upright reward weight inside recovery window.",
+)
+_RECOVERY_UPRIGHT_SEVERITY_SCALE = flags.DEFINE_float(
+    "recovery_upright_severity_scale",
+    0.5,
+    "Additional upright reward weight at max push severity.",
+)
+_RECOVERY_UPRIGHT_SIGMA = flags.DEFINE_float(
+    "recovery_upright_sigma",
+    0.2,
+    "Tilt sigma for force-adaptive upright reward.",
+)
+_RECOVERY_COM_WEIGHT = flags.DEFINE_float(
+    "recovery_com_weight",
+    1.0,
+    "Base COM velocity return reward weight.",
+)
+_RECOVERY_COM_SEVERITY_SCALE = flags.DEFINE_float(
+    "recovery_com_severity_scale",
+    0.5,
+    "Additional COM velocity return reward weight at max push severity.",
+)
+_RECOVERY_COM_SIGMA = flags.DEFINE_float(
+    "recovery_com_sigma",
+    0.5,
+    "Velocity-error sigma for COM return reward.",
+)
+_RECOVERY_STEP_WEIGHT = flags.DEFINE_float(
+    "recovery_step_weight",
+    0.8,
+    "Landing reward weight for recovery steps shortly after a push.",
+)
+_RECOVERY_STEP_AIR_TIME_MIN = flags.DEFINE_float(
+    "recovery_step_air_time_min",
+    0.15,
+    "Minimum foot air-time before a landing counts as a recovery step.",
+)
+_RECOVERY_SURVIVAL_WEIGHT = flags.DEFINE_float(
+    "recovery_survival_weight",
+    0.25,
+    "Per-step survival reward inside the recovery window.",
 )
 _RECOVERY_BONUS = flags.DEFINE_float(
     "recovery_bonus",
-    8.0,
+    4.0,
     "Sparse bonus for stable recovery after window end.",
+)
+_RECOVERY_BONUS_SEVERITY_SCALE = flags.DEFINE_float(
+    "recovery_bonus_severity_scale",
+    4.0,
+    "Additional stable-recovery bonus at max push severity.",
 )
 _RECOVERY_BONUS_STABILITY_STEPS = flags.DEFINE_integer(
     "recovery_bonus_stability_steps",
@@ -1671,6 +2163,7 @@ if [ "${BOOTSTRAP_OFFLINE}" = "1" ]; then
   fi
   apply_mjx_make_data_compat_shim
   apply_jax_clip_kwarg_compat_shim
+  apply_brax_checkpoint_restore_compat_shim
   apply_g1_recovery_reward_shim
   apply_maxrl_scaffold_shim
   VENV_PY="${VENV_DIR}/bin/python"
@@ -1808,6 +2301,7 @@ git_in_repo "${PLAYGROUND_DIR}" fetch --all --tags
 git_in_repo "${PLAYGROUND_DIR}" checkout "${PLAYGROUND_REF}"
 apply_mjx_make_data_compat_shim
 apply_jax_clip_kwarg_compat_shim
+apply_brax_checkpoint_restore_compat_shim
 apply_g1_recovery_reward_shim
 apply_maxrl_scaffold_shim
 

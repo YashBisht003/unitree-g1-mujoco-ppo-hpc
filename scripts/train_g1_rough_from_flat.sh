@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${ROOT_DIR}/.venv"
 PLAYGROUND_DIR="${ROOT_DIR}/mujoco_playground"
+RESOLVE_CKPT_SCRIPT="${ROOT_DIR}/scripts/resolve_ppo_checkpoint.sh"
 
 if [ ! -d "${VENV_DIR}" ]; then
   echo "ERROR: missing ${VENV_DIR}. Run: bash scripts/bootstrap_env.sh"
@@ -112,24 +113,23 @@ if [ -n "${MAXRL_VERBOSE}" ]; then
   CMD+=(--maxrl_verbose="${MAXRL_VERBOSE}")
 fi
 
-CKPT_ARG="${FLAT_CKPT}"
-if [ -d "${FLAT_CKPT}" ]; then
-  CKPT_BASE="$(basename "${FLAT_CKPT}")"
-  HAS_CHILD_DIR=0
-  if find "${FLAT_CKPT}" -mindepth 1 -maxdepth 1 -type d | read -r _; then
-    HAS_CHILD_DIR=1
-  fi
-  if echo "${CKPT_BASE}" | grep -Eq '^[0-9]+$' && [ "${HAS_CHILD_DIR}" = "0" ]; then
+RESOLVED_FLAT_CKPT="$("${RESOLVE_CKPT_SCRIPT}" "${FLAT_CKPT}")"
+echo "[train-rough] resolved flat checkpoint: ${RESOLVED_FLAT_CKPT}"
+
+CKPT_ARG="${RESOLVED_FLAT_CKPT}"
+if [ -d "${RESOLVED_FLAT_CKPT}" ]; then
+  CKPT_BASE="$(basename "${RESOLVED_FLAT_CKPT}")"
+  if echo "${CKPT_BASE}" | grep -Eq '^[0-9]+$'; then
     WRAP_DIR="${ROOT_DIR}/.resume_ckpt_rough"
     rm -rf "${WRAP_DIR}"
     mkdir -p "${WRAP_DIR}"
-    if ln -s "${FLAT_CKPT}" "${WRAP_DIR}/${CKPT_BASE}" 2>/dev/null; then
+    if ln -s "${RESOLVED_FLAT_CKPT}" "${WRAP_DIR}/${CKPT_BASE}" 2>/dev/null; then
       :
     else
-      cp -a "${FLAT_CKPT}" "${WRAP_DIR}/${CKPT_BASE}"
+      cp -a "${RESOLVED_FLAT_CKPT}" "${WRAP_DIR}/${CKPT_BASE}"
     fi
     CKPT_ARG="${WRAP_DIR}"
-    echo "[train-rough] wrapped checkpoint step dir ${FLAT_CKPT} as ${CKPT_ARG}/${CKPT_BASE}"
+    echo "[train-rough] wrapped checkpoint step dir ${RESOLVED_FLAT_CKPT} as ${CKPT_ARG}/${CKPT_BASE}"
   fi
 fi
 

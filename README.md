@@ -210,6 +210,17 @@ MODE=ppo_dense \
 bash scripts/submit_push_recovery.sh
 ```
 
+Fresh local pipeline on a single workstation GPU:
+
+```bash
+cd unitree_g1_mujoco_ppo_hpc
+PROFILE=single_gpu \
+PUSH_REWARD_MODE=force_adaptive \
+bash scripts/train_g1_fresh_pipeline.sh
+```
+
+This keeps flat/rough on the baseline PPO setup and only switches stage-3 push training to the force-adaptive recovery reward. Use `PROFILE=baseline` for the longer original horizons or `PROFILE=smoke` for a short end-to-end validation run.
+
 ## Windows to HPC transfer
 
 Create upload archive on your Windows machine:
