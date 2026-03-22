@@ -28,6 +28,16 @@ def _parse_magnitudes(text: str) -> list[float]:
   return [float(v.strip()) for v in text.split(",") if v.strip()]
 
 
+def _parse_angles_deg(text: str) -> list[float] | None:
+  text = text.strip()
+  if not text:
+    return None
+  if text.startswith("["):
+    values = json.loads(text)
+    return [float(v) for v in values]
+  return [float(v.strip()) for v in text.split(",") if v.strip()]
+
+
 def _parse_command(text: str | None) -> tuple[float, float, float] | None:
   if not text:
     return None
@@ -114,6 +124,7 @@ def _build_config_overrides(
     push_magnitude: float,
     push_interval_s: float,
     command: tuple[float, float, float] | None,
+    push_angle_deg: float | None,
 ) -> dict[str, Any]:
   override = {
       "push_config": {
@@ -122,6 +133,13 @@ def _build_config_overrides(
           "interval_range": [push_interval_s, push_interval_s],
       }
   }
+  if push_angle_deg is not None:
+    override["push_config"].update(
+        {
+            "direction_mode": "fixed",
+            "fixed_angle_deg": float(push_angle_deg),
+        }
+    )
   if command is not None:
     override.update(
         {
@@ -299,6 +317,15 @@ def main() -> None:
   parser.add_argument("--push_interval_s", type=float, default=2.0)
   parser.add_argument("--push_magnitudes", type=str, default="2,4,6,8,10,12,15")
   parser.add_argument(
+      "--push_angles_deg",
+      type=str,
+      default="",
+      help=(
+          "Optional fixed push angles in degrees. Empty means default random "
+          "uniform push direction. Example: 0,45,90,135,180,225,270,315"
+      ),
+  )
+  parser.add_argument(
       "--command",
       type=str,
       default="",
@@ -339,6 +366,7 @@ def main() -> None:
     raise ValueError("--push_interval_s must be > 0")
 
   magnitudes = _parse_magnitudes(args.push_magnitudes)
+  push_angles_deg = _parse_angles_deg(args.push_angles_deg)
   cmd = _parse_command(args.command if args.command else None)
   user_overrides = (
       json.loads(args.playground_config_overrides)
@@ -367,35 +395,47 @@ def main() -> None:
     output_csv.parent.mkdir(parents=True, exist_ok=True)
 
   all_results: list[dict[str, Any]] = []
-  for i, mag in enumerate(magnitudes):
-    overrides = _build_config_overrides(
-        user_overrides=user_overrides,
-        push_magnitude=float(mag),
-        push_interval_s=args.push_interval_s,
-        command=cmd,
-    )
-    result = _evaluate_one_magnitude(
-        env_name=args.env_name,
-        impl=args.impl,
-        policy_fn=policy_fn,
-        episodes=args.episodes_per_magnitude,
-        batch_size=args.batch_size,
-        episode_length=args.episode_length,
-        recovery_window_s=args.recovery_window_s,
-        seed=args.seed + i,
-        config_overrides=overrides,
-        include_no_push_as_fail=args.include_no_push_as_fail,
-    )
-    result["push_magnitude"] = float(mag)
-    all_results.append(result)
-    print(
-        "[eval] magnitude="
-        f"{mag:.3f} recovery_rate={result['recovery_rate']:.4f} "
-        f"successes={result['successes']}/{result['episodes_evaluated']} "
-        f"mean_reward={result['mean_episode_reward_eval']:.3f} "
-        f"mean_post_push_reward={result['mean_post_push_reward']:.3f} "
-        f"no_push={result['no_push_episodes']}"
-    )
+  angle_grid = push_angles_deg if push_angles_deg is not None else [None]
+  combo_idx = 0
+  for angle_deg in angle_grid:
+    for mag in magnitudes:
+      overrides = _build_config_overrides(
+          user_overrides=user_overrides,
+          push_magnitude=float(mag),
+          push_interval_s=args.push_interval_s,
+          command=cmd,
+          push_angle_deg=angle_deg,
+      )
+      result = _evaluate_one_magnitude(
+          env_name=args.env_name,
+          impl=args.impl,
+          policy_fn=policy_fn,
+          episodes=args.episodes_per_magnitude,
+          batch_size=args.batch_size,
+          episode_length=args.episode_length,
+          recovery_window_s=args.recovery_window_s,
+          seed=args.seed + combo_idx,
+          config_overrides=overrides,
+          include_no_push_as_fail=args.include_no_push_as_fail,
+      )
+      result["push_magnitude"] = float(mag)
+      result["push_angle_deg"] = (
+          float(angle_deg) if angle_deg is not None else None
+      )
+      all_results.append(result)
+      angle_label = (
+          f"{float(angle_deg):.1f}deg" if angle_deg is not None else "random"
+      )
+      print(
+          "[eval] angle="
+          f"{angle_label} magnitude={mag:.3f} "
+          f"recovery_rate={result['recovery_rate']:.4f} "
+          f"successes={result['successes']}/{result['episodes_evaluated']} "
+          f"mean_reward={result['mean_episode_reward_eval']:.3f} "
+          f"mean_post_push_reward={result['mean_post_push_reward']:.3f} "
+          f"no_push={result['no_push_episodes']}"
+      )
+      combo_idx += 1
 
   payload = {
       "timestamp": timestamp,
@@ -408,6 +448,7 @@ def main() -> None:
       "recovery_window_s": args.recovery_window_s,
       "push_interval_s": args.push_interval_s,
       "push_magnitudes": magnitudes,
+      "push_angles_deg": push_angles_deg,
       "include_no_push_as_fail": args.include_no_push_as_fail,
       "command": list(cmd) if cmd is not None else None,
       "playground_config_overrides": user_overrides,
@@ -419,6 +460,7 @@ def main() -> None:
     writer = csv.DictWriter(
         fh,
         fieldnames=[
+            "push_angle_deg",
             "push_magnitude",
             "recovery_rate",
             "successes",
