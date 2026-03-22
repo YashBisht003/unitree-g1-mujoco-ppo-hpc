@@ -125,18 +125,22 @@ def _build_config_overrides(
     push_interval_s: float,
     command: tuple[float, float, float] | None,
     push_angle_deg: float | None,
+    push_angle_frame: str,
+    single_push: bool,
 ) -> dict[str, Any]:
   override = {
       "push_config": {
           "enable": True,
           "magnitude_range": [push_magnitude, push_magnitude],
           "interval_range": [push_interval_s, push_interval_s],
+          "single_push": bool(single_push),
       }
   }
   if push_angle_deg is not None:
     override["push_config"].update(
         {
             "direction_mode": "fixed",
+            "direction_frame": push_angle_frame,
             "fixed_angle_deg": float(push_angle_deg),
         }
     )
@@ -326,6 +330,25 @@ def main() -> None:
       ),
   )
   parser.add_argument(
+      "--push_angle_frame",
+      type=str,
+      default="world",
+      choices=("world", "body"),
+      help=(
+          "Interpret fixed push angles in the world frame or relative to the "
+          "robot body heading."
+      ),
+  )
+  parser.add_argument(
+      "--single_push",
+      action="store_true",
+      default=False,
+      help=(
+          "Apply exactly one push per episode. In this mode, "
+          "--push_interval_s sets the push time."
+      ),
+  )
+  parser.add_argument(
       "--command",
       type=str,
       default="",
@@ -405,6 +428,8 @@ def main() -> None:
           push_interval_s=args.push_interval_s,
           command=cmd,
           push_angle_deg=angle_deg,
+          push_angle_frame=args.push_angle_frame,
+          single_push=args.single_push,
       )
       result = _evaluate_one_magnitude(
           env_name=args.env_name,
@@ -422,6 +447,8 @@ def main() -> None:
       result["push_angle_deg"] = (
           float(angle_deg) if angle_deg is not None else None
       )
+      result["push_angle_frame"] = args.push_angle_frame
+      result["single_push"] = args.single_push
       all_results.append(result)
       angle_label = (
           f"{float(angle_deg):.1f}deg" if angle_deg is not None else "random"
@@ -449,6 +476,8 @@ def main() -> None:
       "push_interval_s": args.push_interval_s,
       "push_magnitudes": magnitudes,
       "push_angles_deg": push_angles_deg,
+      "push_angle_frame": args.push_angle_frame,
+      "single_push": args.single_push,
       "include_no_push_as_fail": args.include_no_push_as_fail,
       "command": list(cmd) if cmd is not None else None,
       "playground_config_overrides": user_overrides,
@@ -460,6 +489,8 @@ def main() -> None:
     writer = csv.DictWriter(
         fh,
         fieldnames=[
+            "push_angle_frame",
+            "single_push",
             "push_angle_deg",
             "push_magnitude",
             "recovery_rate",
