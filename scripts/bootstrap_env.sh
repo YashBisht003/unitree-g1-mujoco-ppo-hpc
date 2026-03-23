@@ -230,13 +230,14 @@ import sys
 
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-marker = "__codex_g1_recovery_reward_v5__"
+marker = "__codex_g1_recovery_reward_v6__"
 if marker in text:
   print("[bootstrap] G1 recovery-reward shim already present")
   raise SystemExit(0)
 
 text = text.replace("# __codex_g1_recovery_reward_v3__\n", "")
 text = text.replace("# __codex_g1_recovery_reward_v4__\n", "")
+text = text.replace("# __codex_g1_recovery_reward_v5__\n", "")
 
 if "class Joystick(g1_base.G1Env):" not in text:
   print("[bootstrap] G1 joystick layout not recognized; skipping recovery-reward shim")
@@ -310,6 +311,23 @@ if "recovery_reward=config_dict.create(" not in text:
   )
   if n == 0:
     print("[bootstrap] failed to insert recovery_reward config; skipping")
+    raise SystemExit(0)
+
+if "direction_frame=" not in text or "fixed_angle_deg=" not in text or "single_push=" not in text:
+  push_block_pattern = re.compile(
+      r'(\s+push_config=config_dict\.create\(\n\s+enable=True,\n\s+interval_range=\[[^\]]+\],\n\s+magnitude_range=\[[^\]]+\],\n)(\s+\),\n)'
+  )
+  push_block_insert = (
+      r"\1"
+      + '          direction_mode="uniform",\n'
+      + '          direction_frame="world",  # world|body\n'
+      + '          fixed_angle_deg=0.0,\n'
+      + '          single_push=False,\n'
+      + r"\2"
+  )
+  text, n = push_block_pattern.subn(push_block_insert, text, count=1)
+  if n == 0:
+    print("[bootstrap] failed to insert push direction config; skipping")
     raise SystemExit(0)
 
 if "push_mask_window_steps=" not in text:
@@ -436,6 +454,18 @@ if '"push_mask_countdown"' not in text:
     raise SystemExit(0)
   text = text.replace(info_upgrade_anchor, info_upgrade_insert, 1)
 
+if '"last_push_theta"' not in text or '"push_count"' not in text:
+  info_theta_anchor = '        "last_push_magnitude": jp.array(0.0),\n'
+  info_theta_insert = (
+      '        "last_push_magnitude": jp.array(0.0),\n'
+      '        "last_push_theta": jp.array(0.0),\n'
+      '        "push_count": jp.array(0, dtype=jp.int32),\n'
+  )
+  if info_theta_anchor not in text:
+    print("[bootstrap] failed to insert push theta/count info fields; skipping")
+    raise SystemExit(0)
+  text = text.replace(info_theta_anchor, info_theta_insert, 1)
+
 if '"last_push_magnitude"' not in text:
   info_upgrade_anchor = '        "in_push_mask_window": jp.array(0.0),\n'
   info_upgrade_insert = (
@@ -467,6 +497,55 @@ if 'metrics["diagnostics/recovery_countdown"] = jp.zeros(())' not in text:
     print("[bootstrap] failed to initialize recovery diagnostics metrics; skipping")
     raise SystemExit(0)
   text = text.replace(reset_metrics_anchor, reset_metrics_insert, 1)
+
+if 'metrics["diagnostics/last_push_theta"] = jp.zeros(())' not in text:
+  reset_theta_anchor = '    metrics["diagnostics/last_push_magnitude"] = jp.zeros(())\n'
+  reset_theta_insert = (
+      '    metrics["diagnostics/last_push_magnitude"] = jp.zeros(())\n'
+      '    metrics["diagnostics/last_push_theta"] = jp.zeros(())\n'
+  )
+  if reset_theta_anchor not in text:
+    print("[bootstrap] failed to initialize push theta metric; skipping")
+    raise SystemExit(0)
+  text = text.replace(reset_theta_anchor, reset_theta_insert, 1)
+
+if 'if getattr(push_cfg, "direction_frame", "world") == "body":' not in text or 'if bool(getattr(push_cfg, "single_push", False)):' not in text:
+  push_logic_pattern = re.compile(
+      r'''    state\.info\["rng"\], push1_rng, push2_rng = jax\.random\.split\(\n        state\.info\["rng"\], 3\n    \)\n    push = jax\.random\.uniform\(push1_rng, minval=-1\.0, maxval=1\.0, shape=\(2,\)\)\n    push *= jp\.array\(self\._config\.push_config\.magnitude_range\)\n    push_trigger = \(\n        jp\.mod\(state\.info\["push_step"\] \+ 1, state\.info\["push_interval_steps"\]\) == 0\n    \)\n    push \*= push_trigger\n    push \*= self\._config\.push_config\.enable\n''',
+      re.MULTILINE,
+  )
+  push_logic_repl = """    state.info["rng"], push1_rng, push2_rng = jax.random.split(
+        state.info["rng"], 3
+    )
+    push_cfg = self._config.push_config
+    push_theta = jax.random.uniform(push1_rng, maxval=2 * jp.pi)
+    if getattr(push_cfg, "direction_mode", "uniform") == "fixed":
+      push_theta = jp.deg2rad(
+          jp.array(float(getattr(push_cfg, "fixed_angle_deg", 0.0)))
+      )
+    base_rot = math.quat_to_mat(state.data.qpos[3:7])
+    base_yaw = jp.arctan2(base_rot[1, 0], base_rot[0, 0])
+    if getattr(push_cfg, "direction_frame", "world") == "body":
+      push_theta = push_theta + base_yaw
+    push_magnitude = jax.random.uniform(
+        push2_rng,
+        minval=push_cfg.magnitude_range[0],
+        maxval=push_cfg.magnitude_range[1],
+    )
+    push = jp.array([jp.cos(push_theta), jp.sin(push_theta)])
+    push_trigger = (
+        jp.mod(state.info["push_step"] + 1, state.info["push_interval_steps"]) == 0
+    )
+    if bool(getattr(push_cfg, "single_push", False)):
+      push_trigger = push_trigger & (state.info["push_count"] < 1)
+    push *= push_trigger
+    push *= push_magnitude
+    push *= push_cfg.enable
+"""
+  text, n = push_logic_pattern.subn(push_logic_repl, text, count=1)
+  if n == 0:
+    print("[bootstrap] failed to patch push direction logic; skipping")
+    raise SystemExit(0)
 
 if 'metrics["diagnostics/last_push_magnitude"] = jp.zeros(())' not in text:
   reset_metrics_anchor = '    metrics["diagnostics/recovery_bonus_flag"] = jp.zeros(())\n'
@@ -641,6 +720,9 @@ new_block = """    done = self._get_termination(data)
     state.info["push_mask_countdown"] = push_mask_countdown
     state.info["in_push_mask_window"] = in_push_mask_window.astype(jp.float32)
     state.info["last_push_magnitude"] = last_push_magnitude
+    state.info["last_push_theta"] = jp.where(
+        push_event, push_theta.astype(jp.float32), state.info["last_push_theta"]
+    )
     state.info["recovery_severity"] = recovery_severity
     state.info["steps_since_push"] = steps_since_push
     state.info["recovery_survived"] = recovery_survived
@@ -650,6 +732,7 @@ new_block = """    done = self._get_termination(data)
     state.info["cp_valid"] = cp_valid
     state.info["cp_xy_norm"] = cp_xy_norm
     state.info["cp_fail_window"] = cp_fail_window
+    state.info["push_count"] += push_event.astype(jp.int32)
 
     rewards = self._get_reward(
         data, action, state.info, state.metrics, done, first_contact, contact
@@ -891,6 +974,9 @@ metrics_insert = '''    for k, v in rewards.items():
     state.metrics["diagnostics/last_push_magnitude"] = state.info[
         "last_push_magnitude"
     ].astype(reward.dtype)
+    state.metrics["diagnostics/last_push_theta"] = state.info[
+        "last_push_theta"
+    ].astype(reward.dtype)
     state.metrics["diagnostics/recovery_severity"] = state.info[
         "recovery_severity"
     ].astype(reward.dtype)
@@ -923,6 +1009,9 @@ if "diagnostics/last_push_magnitude" not in text:
     ].astype(reward.dtype)
     state.metrics["diagnostics/last_push_magnitude"] = state.info[
         "last_push_magnitude"
+    ].astype(reward.dtype)
+    state.metrics["diagnostics/last_push_theta"] = state.info[
+        "last_push_theta"
     ].astype(reward.dtype)
     state.metrics["diagnostics/recovery_severity"] = state.info[
         "recovery_severity"
