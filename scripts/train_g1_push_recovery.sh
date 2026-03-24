@@ -67,10 +67,12 @@ NUM_ENVS="${NUM_ENVS:-1024}"
 NUM_EVAL_ENVS="${NUM_EVAL_ENVS:-128}"
 SEED="${SEED:-1}"
 SUFFIX="${SUFFIX:-g1-push-recovery-seed${SEED}}"
+ENTROPY_COST="${ENTROPY_COST:-0.005}"
 USE_TB="${USE_TB:-1}"
 USE_WANDB="${USE_WANDB:-0}"
 MODE="${MODE:-ppo_dense}" # ppo_dense|maxrl_binary|maxrl_t
 ADV_MODE="${ADV_MODE:-}"  # optional explicit override: ppo|maxrl_binary|maxrl_temporal
+DRY_RUN="${DRY_RUN:-0}"
 SCENARIO_GROUP_SIZE="${SCENARIO_GROUP_SIZE:-8}"
 MAXRL_SCENARIO_KEY="${MAXRL_SCENARIO_KEY:-push_cfg}"
 MAXRL_VERBOSE="${MAXRL_VERBOSE:-1}"
@@ -82,6 +84,30 @@ PUSH_EVENT_EPS="${PUSH_EVENT_EPS:-1e-6}"
 PUSH_ENTROPY_MODE="${PUSH_ENTROPY_MODE:-off}"     # off|post_push_additive
 PUSH_ENTROPY_DELTA="${PUSH_ENTROPY_DELTA:-0.0}"
 PUSH_REWARD_MODE="${PUSH_REWARD_MODE:-force_adaptive}"  # off|recovery_window|force_adaptive
+PUSH_REWARD_ABLATION_MODE="${PUSH_REWARD_ABLATION_MODE:-baseline}"  # baseline|survival_min|survival_stable|survival_phi
+PUSH_INTERVAL_MIN="${PUSH_INTERVAL_MIN:-}"
+PUSH_INTERVAL_MAX="${PUSH_INTERVAL_MAX:-}"
+PUSH_MAGNITUDE_MIN="${PUSH_MAGNITUDE_MIN:-}"
+PUSH_MAGNITUDE_MAX="${PUSH_MAGNITUDE_MAX:-}"
+PUSH_DIRECTION_MODE="${PUSH_DIRECTION_MODE:-}"
+PUSH_DIRECTION_FRAME="${PUSH_DIRECTION_FRAME:-}"
+PUSH_FIXED_ANGLE_DEG="${PUSH_FIXED_ANGLE_DEG:-}"
+PUSH_SINGLE_PUSH="${PUSH_SINGLE_PUSH:-}"
+SURVIVAL_ALIVE_SCALE="${SURVIVAL_ALIVE_SCALE:-1.0}"
+SURVIVAL_TERMINATION_SCALE="${SURVIVAL_TERMINATION_SCALE:--100.0}"
+SURVIVAL_ACTION_RATE_SCALE="${SURVIVAL_ACTION_RATE_SCALE:--0.0001}"
+SURVIVAL_DOF_POS_LIMITS_SCALE="${SURVIVAL_DOF_POS_LIMITS_SCALE:--0.001}"
+SURVIVAL_ANG_VEL_XY_SCALE="${SURVIVAL_ANG_VEL_XY_SCALE:--0.05}"
+SURVIVAL_ORIENTATION_SCALE="${SURVIVAL_ORIENTATION_SCALE:--0.1}"
+SURVIVAL_BASE_HEIGHT_SCALE="${SURVIVAL_BASE_HEIGHT_SCALE:--0.05}"
+SURVIVAL_PHI_SCALE="${SURVIVAL_PHI_SCALE:-2.0}"
+SURVIVAL_PHI_GAMMA="${SURVIVAL_PHI_GAMMA:-0.97}"
+SURVIVAL_PHI_UPRIGHT_WEIGHT="${SURVIVAL_PHI_UPRIGHT_WEIGHT:-0.5}"
+SURVIVAL_PHI_HEIGHT_WEIGHT="${SURVIVAL_PHI_HEIGHT_WEIGHT:-0.3}"
+SURVIVAL_PHI_ANGVEL_WEIGHT="${SURVIVAL_PHI_ANGVEL_WEIGHT:-0.2}"
+SURVIVAL_PHI_HEIGHT_MIN="${SURVIVAL_PHI_HEIGHT_MIN:-0.3}"
+SURVIVAL_PHI_HEIGHT_NOMINAL="${SURVIVAL_PHI_HEIGHT_NOMINAL:-0.5}"
+SURVIVAL_PHI_ANGVEL_K="${SURVIVAL_PHI_ANGVEL_K:-1.0}"
 RECOVERY_WINDOW_K="${RECOVERY_WINDOW_K:-60}"
 RECOVERY_WINDOW_TRACKING_SCALE="${RECOVERY_WINDOW_TRACKING_SCALE:-0.3}"
 RECOVERY_WINDOW_TRACKING_SCALE_MIN="${RECOVERY_WINDOW_TRACKING_SCALE_MIN:-0.1}"
@@ -151,44 +177,205 @@ if [ "${USE_WANDB}" = "1" ]; then WANDB_FLAG="True"; else WANDB_FLAG="False"; fi
 if [ "${MAXRL_LOG_ONLY_FLAG}" = "1" ]; then MAXRL_LOG_ONLY_BOOL="True"; else MAXRL_LOG_ONLY_BOOL="False"; fi
 if [ "${MAXRL_VERBOSE}" = "1" ]; then MAXRL_VERBOSE_BOOL="True"; else MAXRL_VERBOSE_BOOL="False"; fi
 
-# Build playground overrides for recovery-window reward redesign.
-if [ "${PUSH_REWARD_MODE}" != "off" ]; then
-  RECOVERY_OVERRIDES_JSON="$("${VENV_DIR}/bin/python" -B - <<PY
+if { [ -n "${PUSH_INTERVAL_MIN}" ] && [ -z "${PUSH_INTERVAL_MAX}" ]; } || \
+   { [ -z "${PUSH_INTERVAL_MIN}" ] && [ -n "${PUSH_INTERVAL_MAX}" ]; }; then
+  echo "ERROR: set both PUSH_INTERVAL_MIN and PUSH_INTERVAL_MAX together."
+  exit 1
+fi
+
+if { [ -n "${PUSH_MAGNITUDE_MIN}" ] && [ -z "${PUSH_MAGNITUDE_MAX}" ]; } || \
+   { [ -z "${PUSH_MAGNITUDE_MIN}" ] && [ -n "${PUSH_MAGNITUDE_MAX}" ]; }; then
+  echo "ERROR: set both PUSH_MAGNITUDE_MIN and PUSH_MAGNITUDE_MAX together."
+  exit 1
+fi
+
+case "${PUSH_REWARD_ABLATION_MODE}" in
+  baseline|survival_min|survival_stable|survival_phi) ;;
+  *)
+    echo "ERROR: invalid PUSH_REWARD_ABLATION_MODE=${PUSH_REWARD_ABLATION_MODE}. Expected baseline|survival_min|survival_stable|survival_phi"
+    exit 1
+    ;;
+esac
+
+if [ "${PUSH_REWARD_ABLATION_MODE}" != "baseline" ] && [ "${PUSH_REWARD_MODE}" != "off" ]; then
+  echo "[train-push] forcing PUSH_REWARD_MODE=off because PUSH_REWARD_ABLATION_MODE=${PUSH_REWARD_ABLATION_MODE}"
+  PUSH_REWARD_MODE="off"
+fi
+
+OVERRIDES_JSON="$("${VENV_DIR}/bin/python" -B - <<'PY'
 import json
-base = {}
-if "${PLAYGROUND_CONFIG_OVERRIDES:-}":
-  base = json.loads("""${PLAYGROUND_CONFIG_OVERRIDES:-}""")
-base.setdefault("recovery_reward", {})
-base["recovery_reward"].update({
-  "mode": "${PUSH_REWARD_MODE}",
-  "window_steps": int("${RECOVERY_WINDOW_K}"),
-  "tracking_scale": float("${RECOVERY_WINDOW_TRACKING_SCALE}"),
-  "tracking_scale_min": float("${RECOVERY_WINDOW_TRACKING_SCALE_MIN}"),
-  "omega_weight": float("${RECOVERY_OMEGA_WEIGHT}"),
-  "ang_mom_weight": float("${RECOVERY_ANG_MOM_WEIGHT}"),
-  "ang_mom_severity_scale": float("${RECOVERY_ANG_MOM_SEVERITY_SCALE}"),
-  "ang_mom_sigma": float("${RECOVERY_ANG_MOM_SIGMA}"),
-  "upright_weight": float("${RECOVERY_UPRIGHT_WEIGHT}"),
-  "upright_severity_scale": float("${RECOVERY_UPRIGHT_SEVERITY_SCALE}"),
-  "upright_sigma": float("${RECOVERY_UPRIGHT_SIGMA}"),
-  "com_weight": float("${RECOVERY_COM_WEIGHT}"),
-  "com_severity_scale": float("${RECOVERY_COM_SEVERITY_SCALE}"),
-  "com_sigma": float("${RECOVERY_COM_SIGMA}"),
-  "step_weight": float("${RECOVERY_STEP_WEIGHT}"),
-  "step_air_time_min": float("${RECOVERY_STEP_AIR_TIME_MIN}"),
-  "survival_weight": float("${RECOVERY_SURVIVAL_WEIGHT}"),
-  "bonus": float("${RECOVERY_BONUS}"),
-  "bonus_severity_scale": float("${RECOVERY_BONUS_SEVERITY_SCALE}"),
-  "bonus_stability_steps": int("${RECOVERY_BONUS_STABILITY_STEPS}"),
-  "bonus_delay_steps": int("${RECOVERY_BONUS_DELAY_STEPS}"),
-  "stable_lin_tracking_min": float("${RECOVERY_STABLE_LIN_MIN}"),
-  "stable_ang_tracking_min": float("${RECOVERY_STABLE_ANG_MIN}"),
-  "capture_point_log": bool(int("${CAPTURE_POINT_LOG}")),
-})
+import os
+
+
+def load_base_overrides():
+  raw = os.environ.get("PLAYGROUND_CONFIG_OVERRIDES", "")
+  if not raw:
+    return {}
+  return json.loads(raw)
+
+
+def apply_recovery_reward_overrides(base):
+  mode = os.environ["PUSH_REWARD_MODE"]
+  if mode == "off":
+    return
+  base.setdefault("recovery_reward", {})
+  base["recovery_reward"].update({
+      "mode": mode,
+      "window_steps": int(os.environ["RECOVERY_WINDOW_K"]),
+      "tracking_scale": float(os.environ["RECOVERY_WINDOW_TRACKING_SCALE"]),
+      "tracking_scale_min": float(os.environ["RECOVERY_WINDOW_TRACKING_SCALE_MIN"]),
+      "omega_weight": float(os.environ["RECOVERY_OMEGA_WEIGHT"]),
+      "ang_mom_weight": float(os.environ["RECOVERY_ANG_MOM_WEIGHT"]),
+      "ang_mom_severity_scale": float(os.environ["RECOVERY_ANG_MOM_SEVERITY_SCALE"]),
+      "ang_mom_sigma": float(os.environ["RECOVERY_ANG_MOM_SIGMA"]),
+      "upright_weight": float(os.environ["RECOVERY_UPRIGHT_WEIGHT"]),
+      "upright_severity_scale": float(os.environ["RECOVERY_UPRIGHT_SEVERITY_SCALE"]),
+      "upright_sigma": float(os.environ["RECOVERY_UPRIGHT_SIGMA"]),
+      "com_weight": float(os.environ["RECOVERY_COM_WEIGHT"]),
+      "com_severity_scale": float(os.environ["RECOVERY_COM_SEVERITY_SCALE"]),
+      "com_sigma": float(os.environ["RECOVERY_COM_SIGMA"]),
+      "step_weight": float(os.environ["RECOVERY_STEP_WEIGHT"]),
+      "step_air_time_min": float(os.environ["RECOVERY_STEP_AIR_TIME_MIN"]),
+      "survival_weight": float(os.environ["RECOVERY_SURVIVAL_WEIGHT"]),
+      "bonus": float(os.environ["RECOVERY_BONUS"]),
+      "bonus_severity_scale": float(os.environ["RECOVERY_BONUS_SEVERITY_SCALE"]),
+      "bonus_stability_steps": int(os.environ["RECOVERY_BONUS_STABILITY_STEPS"]),
+      "bonus_delay_steps": int(os.environ["RECOVERY_BONUS_DELAY_STEPS"]),
+      "stable_lin_tracking_min": float(os.environ["RECOVERY_STABLE_LIN_MIN"]),
+      "stable_ang_tracking_min": float(os.environ["RECOVERY_STABLE_ANG_MIN"]),
+      "capture_point_log": bool(int(os.environ["CAPTURE_POINT_LOG"])),
+  })
+
+
+def parse_optional_bool(name):
+  raw = os.environ.get(name, "").strip().lower()
+  if not raw:
+    return None
+  if raw in {"1", "true", "yes", "on"}:
+    return True
+  if raw in {"0", "false", "no", "off"}:
+    return False
+  raise ValueError(f"invalid boolean for {name}: {raw}")
+
+
+def apply_push_config_overrides(base):
+  push_updates = {}
+
+  interval_min = os.environ.get("PUSH_INTERVAL_MIN", "").strip()
+  interval_max = os.environ.get("PUSH_INTERVAL_MAX", "").strip()
+  if interval_min and interval_max:
+    push_updates["interval_range"] = [float(interval_min), float(interval_max)]
+
+  magnitude_min = os.environ.get("PUSH_MAGNITUDE_MIN", "").strip()
+  magnitude_max = os.environ.get("PUSH_MAGNITUDE_MAX", "").strip()
+  if magnitude_min and magnitude_max:
+    push_updates["magnitude_range"] = [float(magnitude_min), float(magnitude_max)]
+
+  direction_mode = os.environ.get("PUSH_DIRECTION_MODE", "").strip()
+  if direction_mode:
+    push_updates["direction_mode"] = direction_mode
+
+  direction_frame = os.environ.get("PUSH_DIRECTION_FRAME", "").strip()
+  if direction_frame:
+    push_updates["direction_frame"] = direction_frame
+
+  fixed_angle_deg = os.environ.get("PUSH_FIXED_ANGLE_DEG", "").strip()
+  if fixed_angle_deg:
+    push_updates["fixed_angle_deg"] = float(fixed_angle_deg)
+
+  single_push = parse_optional_bool("PUSH_SINGLE_PUSH")
+  if single_push is not None:
+    push_updates["single_push"] = single_push
+
+  if push_updates:
+    base.setdefault("push_config", {})
+    base["push_config"].update(push_updates)
+
+
+def apply_reward_ablation_overrides(base):
+  mode = os.environ["PUSH_REWARD_ABLATION_MODE"]
+  if mode == "baseline":
+    return
+
+  zeroed_scales = {
+      "tracking_lin_vel": 0.0,
+      "tracking_ang_vel": 0.0,
+      "recovery_ang_mom": 0.0,
+      "recovery_bonus": 0.0,
+      "recovery_upright": 0.0,
+      "recovery_com_vel": 0.0,
+      "recovery_step": 0.0,
+      "recovery_survival": 0.0,
+      "lin_vel_z": 0.0,
+      "ang_vel_xy": 0.0,
+      "orientation": 0.0,
+      "base_height": 0.0,
+      "torques": 0.0,
+      "action_rate": 0.0,
+      "energy": 0.0,
+      "dof_acc": 0.0,
+      "feet_clearance": 0.0,
+      "feet_air_time": 0.0,
+      "feet_slip": 0.0,
+      "feet_height": 0.0,
+      "feet_phase": 0.0,
+      "alive": 0.0,
+      "survival_phi": 0.0,
+      "stand_still": 0.0,
+      "termination": 0.0,
+      "collision": 0.0,
+      "contact_force": 0.0,
+      "joint_deviation_knee": 0.0,
+      "joint_deviation_hip": 0.0,
+      "dof_pos_limits": 0.0,
+      "pose": 0.0,
+  }
+  zeroed_scales.update({
+      "alive": float(os.environ.get("SURVIVAL_ALIVE_SCALE", "1.0")),
+      "termination": float(os.environ.get("SURVIVAL_TERMINATION_SCALE", "-100.0")),
+      "action_rate": float(os.environ.get("SURVIVAL_ACTION_RATE_SCALE", "-0.0001")),
+      "dof_pos_limits": float(os.environ.get("SURVIVAL_DOF_POS_LIMITS_SCALE", "-0.001")),
+  })
+  if mode == "survival_stable":
+    zeroed_scales.update({
+        "ang_vel_xy": float(os.environ.get("SURVIVAL_ANG_VEL_XY_SCALE", "-0.05")),
+        "orientation": float(os.environ.get("SURVIVAL_ORIENTATION_SCALE", "-0.1")),
+        "base_height": float(os.environ.get("SURVIVAL_BASE_HEIGHT_SCALE", "-0.05")),
+    })
+  elif mode == "survival_phi":
+    zeroed_scales.update({
+        "survival_phi": float(os.environ.get("SURVIVAL_PHI_SCALE", "2.0")),
+    })
+
+  base.setdefault("reward_config", {})
+  base["reward_config"].setdefault("scales", {})
+  base["reward_config"]["scales"].update(zeroed_scales)
+  base.setdefault("recovery_reward", {})
+  if mode == "survival_phi":
+    base["recovery_reward"].update({
+        "mode": "survival_phi",
+        "survival_phi_gamma": float(os.environ.get("SURVIVAL_PHI_GAMMA", "0.97")),
+        "survival_phi_upright_weight": float(os.environ.get("SURVIVAL_PHI_UPRIGHT_WEIGHT", "0.5")),
+        "survival_phi_height_weight": float(os.environ.get("SURVIVAL_PHI_HEIGHT_WEIGHT", "0.3")),
+        "survival_phi_angvel_weight": float(os.environ.get("SURVIVAL_PHI_ANGVEL_WEIGHT", "0.2")),
+        "survival_phi_height_min": float(os.environ.get("SURVIVAL_PHI_HEIGHT_MIN", "0.3")),
+        "survival_phi_height_nominal": float(os.environ.get("SURVIVAL_PHI_HEIGHT_NOMINAL", "0.5")),
+        "survival_phi_angvel_k": float(os.environ.get("SURVIVAL_PHI_ANGVEL_K", "1.0")),
+    })
+  else:
+    base["recovery_reward"]["mode"] = "off"
+
+
+base = load_base_overrides()
+apply_recovery_reward_overrides(base)
+apply_push_config_overrides(base)
+apply_reward_ablation_overrides(base)
 print(json.dumps(base, separators=(",", ":")))
 PY
 )"
-  PLAYGROUND_CONFIG_OVERRIDES="${RECOVERY_OVERRIDES_JSON}"
+
+if [ -n "${OVERRIDES_JSON}" ] && [ "${OVERRIDES_JSON}" != "{}" ]; then
+  PLAYGROUND_CONFIG_OVERRIDES="${OVERRIDES_JSON}"
 fi
 
 CMD=(
@@ -198,7 +385,7 @@ CMD=(
   --num_timesteps="${NUM_TIMESTEPS}"
   --num_envs="${NUM_ENVS}"
   --num_eval_envs="${NUM_EVAL_ENVS}"
-  --entropy_cost=0.005
+  --entropy_cost="${ENTROPY_COST}"
   --clipping_epsilon=0.2
   --policy_hidden_layer_sizes=512,256,128
   --value_hidden_layer_sizes=512,256,128
@@ -247,9 +434,12 @@ if [ -d "${RESOLVED_ROUGH_CKPT}" ]; then
 fi
 CMD+=(--load_checkpoint_path="${CKPT_ARG}")
 
-echo "[train-push] mode=${MODE} adv_mode=${ADV_MODE_FLAG} scenario_group_size=${SCENARIO_GROUP_SIZE} push_adv_mask_mode=${PUSH_ADV_MASK_MODE} push_mask_source=${PUSH_MASK_SOURCE} push_mask_window_k=${PUSH_MASK_WINDOW_K} push_entropy_mode=${PUSH_ENTROPY_MODE} push_reward_mode=${PUSH_REWARD_MODE}"
+echo "[train-push] mode=${MODE} adv_mode=${ADV_MODE_FLAG} scenario_group_size=${SCENARIO_GROUP_SIZE} push_adv_mask_mode=${PUSH_ADV_MASK_MODE} push_mask_source=${PUSH_MASK_SOURCE} push_mask_window_k=${PUSH_MASK_WINDOW_K} push_entropy_mode=${PUSH_ENTROPY_MODE} push_reward_mode=${PUSH_REWARD_MODE} reward_ablation_mode=${PUSH_REWARD_ABLATION_MODE}"
 if [ -n "${PLAYGROUND_CONFIG_OVERRIDES:-}" ]; then
   echo "[train-push] playground_config_overrides=${PLAYGROUND_CONFIG_OVERRIDES}"
 fi
 echo "[train-push] running: ${CMD[*]}"
+if [ "${DRY_RUN}" = "1" ]; then
+  exit 0
+fi
 "${CMD[@]}"
