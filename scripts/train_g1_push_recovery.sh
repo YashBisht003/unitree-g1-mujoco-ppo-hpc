@@ -83,7 +83,7 @@ PUSH_MASK_WINDOW_K="${PUSH_MASK_WINDOW_K:-20}"    # used by stateful source
 PUSH_EVENT_EPS="${PUSH_EVENT_EPS:-1e-6}"
 PUSH_ENTROPY_MODE="${PUSH_ENTROPY_MODE:-off}"     # off|post_push_additive
 PUSH_ENTROPY_DELTA="${PUSH_ENTROPY_DELTA:-0.0}"
-PUSH_REWARD_MODE="${PUSH_REWARD_MODE:-force_adaptive}"  # off|recovery_window|force_adaptive
+PUSH_REWARD_MODE="${PUSH_REWARD_MODE:-force_adaptive}"  # off|recovery_window|force_adaptive|recovery_gated
 PUSH_REWARD_ABLATION_MODE="${PUSH_REWARD_ABLATION_MODE:-baseline}"  # baseline|survival_min|survival_stable|survival_phi
 PUSH_INTERVAL_MIN="${PUSH_INTERVAL_MIN:-}"
 PUSH_INTERVAL_MAX="${PUSH_INTERVAL_MAX:-}"
@@ -91,6 +91,9 @@ PUSH_MAGNITUDE_MIN="${PUSH_MAGNITUDE_MIN:-}"
 PUSH_MAGNITUDE_MAX="${PUSH_MAGNITUDE_MAX:-}"
 PUSH_DIRECTION_MODE="${PUSH_DIRECTION_MODE:-}"
 PUSH_DIRECTION_FRAME="${PUSH_DIRECTION_FRAME:-}"
+PUSH_BIASED_DIRECTION_PROB="${PUSH_BIASED_DIRECTION_PROB:-}"
+PUSH_BIASED_DIRECTION_MIN_DEG="${PUSH_BIASED_DIRECTION_MIN_DEG:-}"
+PUSH_BIASED_DIRECTION_MAX_DEG="${PUSH_BIASED_DIRECTION_MAX_DEG:-}"
 PUSH_FIXED_ANGLE_DEG="${PUSH_FIXED_ANGLE_DEG:-}"
 PUSH_SINGLE_PUSH="${PUSH_SINGLE_PUSH:-}"
 SURVIVAL_ALIVE_SCALE="${SURVIVAL_ALIVE_SCALE:-1.0}"
@@ -130,6 +133,8 @@ RECOVERY_BONUS_STABILITY_STEPS="${RECOVERY_BONUS_STABILITY_STEPS:-10}"
 RECOVERY_BONUS_DELAY_STEPS="${RECOVERY_BONUS_DELAY_STEPS:-10}"
 RECOVERY_STABLE_LIN_MIN="${RECOVERY_STABLE_LIN_MIN:-0.7}"
 RECOVERY_STABLE_ANG_MIN="${RECOVERY_STABLE_ANG_MIN:-0.7}"
+RECOVERY_GATED_ORIENTATION_SCALE="${RECOVERY_GATED_ORIENTATION_SCALE:-0.2}"
+RECOVERY_GATED_BASE_HEIGHT_SCALE="${RECOVERY_GATED_BASE_HEIGHT_SCALE:-0.5}"
 CAPTURE_POINT_LOG="${CAPTURE_POINT_LOG:-0}"
 
 case "${MODE}" in
@@ -189,6 +194,12 @@ if { [ -n "${PUSH_MAGNITUDE_MIN}" ] && [ -z "${PUSH_MAGNITUDE_MAX}" ]; } || \
   exit 1
 fi
 
+if { [ -n "${PUSH_BIASED_DIRECTION_MIN_DEG}" ] && [ -z "${PUSH_BIASED_DIRECTION_MAX_DEG}" ]; } || \
+   { [ -z "${PUSH_BIASED_DIRECTION_MIN_DEG}" ] && [ -n "${PUSH_BIASED_DIRECTION_MAX_DEG}" ]; }; then
+  echo "ERROR: set both PUSH_BIASED_DIRECTION_MIN_DEG and PUSH_BIASED_DIRECTION_MAX_DEG together."
+  exit 1
+fi
+
 case "${PUSH_REWARD_ABLATION_MODE}" in
   baseline|survival_min|survival_stable|survival_phi) ;;
   *)
@@ -221,29 +232,61 @@ def apply_recovery_reward_overrides(base):
   base.setdefault("recovery_reward", {})
   base["recovery_reward"].update({
       "mode": mode,
-      "window_steps": int(os.environ["RECOVERY_WINDOW_K"]),
-      "tracking_scale": float(os.environ["RECOVERY_WINDOW_TRACKING_SCALE"]),
-      "tracking_scale_min": float(os.environ["RECOVERY_WINDOW_TRACKING_SCALE_MIN"]),
-      "omega_weight": float(os.environ["RECOVERY_OMEGA_WEIGHT"]),
-      "ang_mom_weight": float(os.environ["RECOVERY_ANG_MOM_WEIGHT"]),
-      "ang_mom_severity_scale": float(os.environ["RECOVERY_ANG_MOM_SEVERITY_SCALE"]),
-      "ang_mom_sigma": float(os.environ["RECOVERY_ANG_MOM_SIGMA"]),
-      "upright_weight": float(os.environ["RECOVERY_UPRIGHT_WEIGHT"]),
-      "upright_severity_scale": float(os.environ["RECOVERY_UPRIGHT_SEVERITY_SCALE"]),
-      "upright_sigma": float(os.environ["RECOVERY_UPRIGHT_SIGMA"]),
-      "com_weight": float(os.environ["RECOVERY_COM_WEIGHT"]),
-      "com_severity_scale": float(os.environ["RECOVERY_COM_SEVERITY_SCALE"]),
-      "com_sigma": float(os.environ["RECOVERY_COM_SIGMA"]),
-      "step_weight": float(os.environ["RECOVERY_STEP_WEIGHT"]),
-      "step_air_time_min": float(os.environ["RECOVERY_STEP_AIR_TIME_MIN"]),
-      "survival_weight": float(os.environ["RECOVERY_SURVIVAL_WEIGHT"]),
-      "bonus": float(os.environ["RECOVERY_BONUS"]),
-      "bonus_severity_scale": float(os.environ["RECOVERY_BONUS_SEVERITY_SCALE"]),
-      "bonus_stability_steps": int(os.environ["RECOVERY_BONUS_STABILITY_STEPS"]),
-      "bonus_delay_steps": int(os.environ["RECOVERY_BONUS_DELAY_STEPS"]),
-      "stable_lin_tracking_min": float(os.environ["RECOVERY_STABLE_LIN_MIN"]),
-      "stable_ang_tracking_min": float(os.environ["RECOVERY_STABLE_ANG_MIN"]),
-      "capture_point_log": bool(int(os.environ["CAPTURE_POINT_LOG"])),
+      "window_steps": int(os.environ.get("RECOVERY_WINDOW_K", "60")),
+      "tracking_scale": float(
+          os.environ.get("RECOVERY_WINDOW_TRACKING_SCALE", "0.3")
+      ),
+      "tracking_scale_min": float(
+          os.environ.get("RECOVERY_WINDOW_TRACKING_SCALE_MIN", "0.1")
+      ),
+      "omega_weight": float(os.environ.get("RECOVERY_OMEGA_WEIGHT", "0.05")),
+      "ang_mom_weight": float(
+          os.environ.get("RECOVERY_ANG_MOM_WEIGHT", "1.0")
+      ),
+      "ang_mom_severity_scale": float(
+          os.environ.get("RECOVERY_ANG_MOM_SEVERITY_SCALE", "0.5")
+      ),
+      "ang_mom_sigma": float(os.environ.get("RECOVERY_ANG_MOM_SIGMA", "1.5")),
+      "upright_weight": float(os.environ.get("RECOVERY_UPRIGHT_WEIGHT", "1.5")),
+      "upright_severity_scale": float(
+          os.environ.get("RECOVERY_UPRIGHT_SEVERITY_SCALE", "0.5")
+      ),
+      "upright_sigma": float(os.environ.get("RECOVERY_UPRIGHT_SIGMA", "0.2")),
+      "com_weight": float(os.environ.get("RECOVERY_COM_WEIGHT", "1.0")),
+      "com_severity_scale": float(
+          os.environ.get("RECOVERY_COM_SEVERITY_SCALE", "0.5")
+      ),
+      "com_sigma": float(os.environ.get("RECOVERY_COM_SIGMA", "0.5")),
+      "step_weight": float(os.environ.get("RECOVERY_STEP_WEIGHT", "0.8")),
+      "step_air_time_min": float(
+          os.environ.get("RECOVERY_STEP_AIR_TIME_MIN", "0.15")
+      ),
+      "survival_weight": float(
+          os.environ.get("RECOVERY_SURVIVAL_WEIGHT", "0.25")
+      ),
+      "bonus": float(os.environ.get("RECOVERY_BONUS", "4.0")),
+      "bonus_severity_scale": float(
+          os.environ.get("RECOVERY_BONUS_SEVERITY_SCALE", "4.0")
+      ),
+      "bonus_stability_steps": int(
+          os.environ.get("RECOVERY_BONUS_STABILITY_STEPS", "10")
+      ),
+      "bonus_delay_steps": int(
+          os.environ.get("RECOVERY_BONUS_DELAY_STEPS", "10")
+      ),
+      "stable_lin_tracking_min": float(
+          os.environ.get("RECOVERY_STABLE_LIN_MIN", "0.7")
+      ),
+      "stable_ang_tracking_min": float(
+          os.environ.get("RECOVERY_STABLE_ANG_MIN", "0.7")
+      ),
+      "gated_orientation_scale": float(
+          os.environ.get("RECOVERY_GATED_ORIENTATION_SCALE", "0.2")
+      ),
+      "gated_base_height_scale": float(
+          os.environ.get("RECOVERY_GATED_BASE_HEIGHT_SCALE", "0.5")
+      ),
+      "capture_point_log": bool(int(os.environ.get("CAPTURE_POINT_LOG", "0"))),
   })
 
 
@@ -278,6 +321,23 @@ def apply_push_config_overrides(base):
   direction_frame = os.environ.get("PUSH_DIRECTION_FRAME", "").strip()
   if direction_frame:
     push_updates["direction_frame"] = direction_frame
+
+  biased_direction_prob = os.environ.get(
+      "PUSH_BIASED_DIRECTION_PROB", ""
+  ).strip()
+  biased_direction_min = os.environ.get(
+      "PUSH_BIASED_DIRECTION_MIN_DEG", ""
+  ).strip()
+  biased_direction_max = os.environ.get(
+      "PUSH_BIASED_DIRECTION_MAX_DEG", ""
+  ).strip()
+  if biased_direction_prob:
+    push_updates["biased_direction_prob"] = float(biased_direction_prob)
+  if biased_direction_min and biased_direction_max:
+    push_updates["biased_direction_range_deg"] = [
+        float(biased_direction_min),
+        float(biased_direction_max),
+    ]
 
   fixed_angle_deg = os.environ.get("PUSH_FIXED_ANGLE_DEG", "").strip()
   if fixed_angle_deg:
