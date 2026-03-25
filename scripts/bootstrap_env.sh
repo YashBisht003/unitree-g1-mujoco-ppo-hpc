@@ -1036,6 +1036,212 @@ print(f"[bootstrap] installed G1 recovery-reward shim at {path}")
 PY
 }
 
+apply_g1_non_gait_recovery_shim() {
+  local target="${PLAYGROUND_DIR}/mujoco_playground/_src/locomotion/g1/joystick.py"
+  if [ ! -f "${target}" ]; then
+    echo "[bootstrap] warning: ${target} not found; skipping G1 non-gait recovery shim."
+    return 0
+  fi
+
+  "${PYTHON_BIN}" - "${target}" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+marker = "__codex_g1_non_gait_recovery_v1__"
+if marker in text:
+  print("[bootstrap] G1 non-gait recovery shim already present")
+  raise SystemExit(0)
+
+if "biased_direction_prob=" not in text:
+  anchor = '          direction_frame="world",  # world|body\n'
+  if anchor not in text:
+    print("[bootstrap] failed to insert biased push direction config; skipping")
+    raise SystemExit(0)
+  text = text.replace(
+      anchor,
+      anchor
+      + '          biased_direction_prob=0.0,\n'
+      + '          biased_direction_range_deg=[0.0, 360.0],\n',
+      1,
+  )
+
+text = text.replace(
+    '          mode="off",  # off|recovery_window|force_adaptive\n',
+    '          mode="off",  # off|recovery_window|force_adaptive|recovery_gated\n',
+)
+
+if "gated_orientation_scale=" not in text:
+  anchor = '          capture_point_log=False,\n'
+  if anchor not in text:
+    print("[bootstrap] failed to insert recovery_gated config; skipping")
+    raise SystemExit(0)
+  text = text.replace(
+      anchor,
+      anchor
+      + '          gated_orientation_scale=0.2,\n'
+      + '          gated_base_height_scale=0.5,\n',
+      1,
+  )
+
+if 'biased_direction_prob' not in text or 'jax.random.bernoulli(push4_rng' not in text:
+  old = """    state.info["rng"], push1_rng, push2_rng = jax.random.split(
+        state.info["rng"], 3
+    )
+    push_cfg = self._config.push_config
+    push_theta = jax.random.uniform(push1_rng, maxval=2 * jp.pi)
+    if getattr(push_cfg, "direction_mode", "uniform") == "fixed":
+      push_theta = jp.deg2rad(
+          jp.array(float(getattr(push_cfg, "fixed_angle_deg", 0.0)))
+      )
+    base_rot = math.quat_to_mat(state.data.qpos[3:7])
+    base_yaw = jp.arctan2(base_rot[1, 0], base_rot[0, 0])
+    if getattr(push_cfg, "direction_frame", "world") == "body":
+      push_theta = push_theta + base_yaw
+    push_magnitude = jax.random.uniform(
+        push2_rng,
+        minval=push_cfg.magnitude_range[0],
+        maxval=push_cfg.magnitude_range[1],
+    )
+    push = jp.array([jp.cos(push_theta), jp.sin(push_theta)])
+    push_trigger = (
+        jp.mod(state.info["push_step"] + 1, state.info["push_interval_steps"]) == 0
+    )
+    if bool(getattr(push_cfg, "single_push", False)):
+      push_trigger = push_trigger & (state.info["push_count"] < 1)
+    push *= push_trigger
+    push *= push_magnitude
+    push *= push_cfg.enable
+"""
+  new = """    state.info["rng"], push1_rng, push2_rng, push3_rng, push4_rng = jax.random.split(
+        state.info["rng"], 5
+    )
+    push_cfg = self._config.push_config
+    push_theta = jax.random.uniform(push1_rng, maxval=2 * jp.pi)
+    if getattr(push_cfg, "direction_mode", "uniform") == "fixed":
+      push_theta = jp.deg2rad(
+          jp.array(float(getattr(push_cfg, "fixed_angle_deg", 0.0)))
+      )
+    else:
+      biased_prob = float(getattr(push_cfg, "biased_direction_prob", 0.0))
+      if biased_prob > 0.0:
+        angle_range = getattr(
+            push_cfg, "biased_direction_range_deg", [0.0, 360.0]
+        )
+        angle_min = jp.deg2rad(jp.array(float(angle_range[0]), dtype=jp.float32))
+        angle_max = jp.deg2rad(jp.array(float(angle_range[1]), dtype=jp.float32))
+        span = jp.mod(angle_max - angle_min, 2 * jp.pi)
+        span = jp.where(span <= 0.0, 2 * jp.pi, span)
+        biased_theta = jp.mod(
+            angle_min + jax.random.uniform(push3_rng, maxval=span), 2 * jp.pi
+        )
+        use_biased = jax.random.bernoulli(push4_rng, p=biased_prob)
+        push_theta = jp.where(use_biased, biased_theta, push_theta)
+    base_rot = math.quat_to_mat(state.data.qpos[3:7])
+    base_yaw = jp.arctan2(base_rot[1, 0], base_rot[0, 0])
+    if getattr(push_cfg, "direction_frame", "world") == "body":
+      push_theta = push_theta + base_yaw
+    push_magnitude = jax.random.uniform(
+        push2_rng,
+        minval=push_cfg.magnitude_range[0],
+        maxval=push_cfg.magnitude_range[1],
+    )
+    push = jp.array([jp.cos(push_theta), jp.sin(push_theta)])
+    push_trigger = (
+        jp.mod(state.info["push_step"] + 1, state.info["push_interval_steps"]) == 0
+    )
+    if bool(getattr(push_cfg, "single_push", False)):
+      push_trigger = push_trigger & (state.info["push_count"] < 1)
+    push *= push_trigger
+    push *= push_magnitude
+    push *= push_cfg.enable
+"""
+  if old not in text:
+    print("[bootstrap] failed to patch biased push logic; skipping")
+    raise SystemExit(0)
+  text = text.replace(old, new, 1)
+
+text = text.replace(
+    '    recovery_enabled = rec_cfg.mode in ("recovery_window", "force_adaptive")\n',
+    '    recovery_enabled = rec_cfg.mode in ("recovery_window", "force_adaptive", "recovery_gated")\n',
+)
+
+if 'elif self._config.recovery_reward.mode == "recovery_gated":' not in text:
+  anchor = """      rewards["recovery_bonus"] = (
+          bonus + bonus_severity_scale * severity
+      ) * info["recovery_bonus_flag"]
+    else:
+"""
+  insert = """      rewards["recovery_bonus"] = (
+          bonus + bonus_severity_scale * severity
+      ) * info["recovery_bonus_flag"]
+    elif self._config.recovery_reward.mode == "recovery_gated":
+      rec_cfg = self._config.recovery_reward
+      in_window = info["in_recovery_window"] > 0.5
+      orientation_scale = float(
+          getattr(rec_cfg, "gated_orientation_scale", 0.2)
+      )
+      base_height_scale = float(
+          getattr(rec_cfg, "gated_base_height_scale", 0.5)
+      )
+      gated_zero_keys = (
+          "tracking_lin_vel",
+          "tracking_ang_vel",
+          "lin_vel_z",
+          "ang_vel_xy",
+          "torques",
+          "energy",
+          "dof_acc",
+          "feet_slip",
+          "feet_clearance",
+          "feet_height",
+          "feet_air_time",
+          "feet_phase",
+          "stand_still",
+          "collision",
+          "contact_force",
+          "joint_deviation_hip",
+          "joint_deviation_knee",
+          "pose",
+      )
+      for key in gated_zero_keys:
+        rewards[key] = jp.where(in_window, jp.array(0.0), rewards[key])
+      rewards["orientation"] = jp.where(
+          in_window,
+          rewards["orientation"] * orientation_scale,
+          rewards["orientation"],
+      )
+      rewards["base_height"] = jp.where(
+          in_window,
+          rewards["base_height"] * base_height_scale,
+          rewards["base_height"],
+      )
+      rewards["recovery_ang_mom"] = jp.array(0.0)
+      rewards["recovery_bonus"] = jp.array(0.0)
+      rewards["recovery_upright"] = jp.array(0.0)
+      rewards["recovery_com_vel"] = jp.array(0.0)
+      rewards["recovery_step"] = jp.array(0.0)
+      rewards["recovery_survival"] = jp.array(0.0)
+    else:
+"""
+  if anchor not in text:
+    print("[bootstrap] failed to insert recovery_gated reward branch; skipping")
+    raise SystemExit(0)
+  text = text.replace(anchor, insert, 1)
+
+text = text.replace(
+    "class Joystick(g1_base.G1Env):",
+    f"# {marker}\nclass Joystick(g1_base.G1Env):",
+    1,
+)
+
+path.write_text(text)
+print(f"[bootstrap] installed G1 non-gait recovery shim at {path}")
+PY
+}
+
 apply_maxrl_scaffold_shim() {
   local target="${PLAYGROUND_DIR}/learning/train_jax_ppo.py"
   if [ ! -f "${target}" ]; then
@@ -2254,6 +2460,7 @@ if [ "${BOOTSTRAP_OFFLINE}" = "1" ]; then
   apply_jax_clip_kwarg_compat_shim
   apply_brax_checkpoint_restore_compat_shim
   apply_g1_recovery_reward_shim
+  apply_g1_non_gait_recovery_shim
   apply_maxrl_scaffold_shim
   VENV_PY="${VENV_DIR}/bin/python"
   if [ ! -x "${VENV_PY}" ]; then
@@ -2392,6 +2599,7 @@ apply_mjx_make_data_compat_shim
 apply_jax_clip_kwarg_compat_shim
 apply_brax_checkpoint_restore_compat_shim
 apply_g1_recovery_reward_shim
+apply_g1_non_gait_recovery_shim
 apply_maxrl_scaffold_shim
 
 if [ -n "${NUMPY_VERSION}" ]; then

@@ -322,6 +322,16 @@ def apply_push_config_overrides(base):
   if direction_frame:
     push_updates["direction_frame"] = direction_frame
 
+  application_mode = os.environ.get("PUSH_APPLICATION_MODE", "").strip()
+  if application_mode:
+    push_updates["application_mode"] = application_mode
+
+  force_duration_seconds = os.environ.get(
+      "PUSH_FORCE_DURATION_SECONDS", ""
+  ).strip()
+  if force_duration_seconds:
+    push_updates["force_duration_seconds"] = float(force_duration_seconds)
+
   biased_direction_prob = os.environ.get(
       "PUSH_BIASED_DIRECTION_PROB", ""
   ).strip()
@@ -342,6 +352,22 @@ def apply_push_config_overrides(base):
   fixed_angle_deg = os.environ.get("PUSH_FIXED_ANGLE_DEG", "").strip()
   if fixed_angle_deg:
     push_updates["fixed_angle_deg"] = float(fixed_angle_deg)
+
+  target_body_mode = os.environ.get("PUSH_TARGET_BODY_MODE", "").strip()
+  if target_body_mode:
+    push_updates["target_body_mode"] = target_body_mode
+
+  target_body = os.environ.get("PUSH_TARGET_BODY", "").strip()
+  if target_body:
+    push_updates["target_body"] = target_body
+
+  target_body_choices = os.environ.get("PUSH_TARGET_BODY_CHOICES", "").strip()
+  if target_body_choices:
+    push_updates["target_body_choices"] = [
+        part.strip()
+        for part in target_body_choices.split(",")
+        if part.strip()
+    ]
 
   single_push = parse_optional_bool("PUSH_SINGLE_PUSH")
   if single_push is not None:
